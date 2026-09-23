@@ -117,6 +117,7 @@ def _make_llm_metrics_bridge(hm: "HarnessMetrics") -> Callable[[str, Any], None]
         "json_double_decoded": lambda _: hm.record_json_double_decoded(),
         "reasoning_as_structured_output": lambda _: hm.record_reasoning_as_structured_output(),
         "token_usage": _handle_token_usage,
+        "llm_queue": lambda detail: hm.record_llm_queue(detail),
     }
 
     def bridge(event: str, detail: Any = None) -> None:
