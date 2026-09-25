@@ -21,6 +21,11 @@ to follow semantic versioning.
     unattended turns. `handle()` accepts the new types and still accepts
     `RespondResult`.
   - The bench `TaskResult` gains an optional `report` field.
+- Tracing: a plain-HTTP `OTLP_ENDPOINT` for a viewer that serves HTTPS on
+  that port no longer counts as reachable. The probe recognises the 400
+  "HTTP request to an HTTPS server" reply, and the default exporter set-up
+  retries the https twin and uses it, with one line on stderr saying so.
+  Before, tracing turned on and every export was dropped.
 - Connect no longer writes its session history into `llm_config.yaml`. Saved
   aliases now contain only the discovered runtime settings; the whole
   `provenance` block — probe requests and outcomes, token accounting,

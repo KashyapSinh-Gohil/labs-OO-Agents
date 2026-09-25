@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for probe_otlp_endpoint."""
 
+import io
 import urllib.error
 from unittest.mock import MagicMock, patch
 
@@ -103,3 +104,59 @@ class TestProbeOtlpEndpoint:
             probe_otlp_endpoint("http://localhost:5001/v1/traces", timeout=2.0)
 
         assert captured["timeout"] == 2.0
+
+
+def _https_only_400():
+    return urllib.error.HTTPError(
+        None,
+        400,
+        "Bad Request",
+        {},
+        io.BytesIO(b"Client sent an HTTP request to an HTTPS server.\n"),
+    )
+
+
+class TestHttpsOnlyServers:
+    def test_a_plain_http_request_to_an_https_server_is_not_reachable(self):
+        """Every export would fail the same way, so the http URL is not usable."""
+        with patch("urllib.request.urlopen", side_effect=_https_only_400()):
+            assert probe_otlp_endpoint("http://viewer:5443/v1/traces") is False
+
+    def test_other_400s_still_count_as_reachable(self):
+        error = urllib.error.HTTPError(None, 400, "Bad Request", {}, io.BytesIO(b"bad query"))
+        with patch("urllib.request.urlopen", side_effect=error):
+            assert probe_otlp_endpoint("http://viewer:5443/v1/traces") is True
+
+    def test_resolve_upgrades_to_https_when_only_that_answers(self):
+        from nooa.tracing import resolve_otlp_endpoint
+
+        def fake_urlopen(req, timeout):
+            if req.get_full_url().startswith("http://"):
+                raise _https_only_400()
+            mock = MagicMock()
+            mock.__enter__ = lambda s: s
+            mock.__exit__ = MagicMock(return_value=False)
+            return mock
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            assert (
+                resolve_otlp_endpoint("http://viewer:5443/v1/traces")
+                == "https://viewer:5443/v1/traces"
+            )
+
+    def test_resolve_keeps_a_working_http_endpoint(self):
+        from nooa.tracing import resolve_otlp_endpoint
+
+        mock = MagicMock()
+        mock.__enter__ = lambda s: s
+        mock.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=mock):
+            assert resolve_otlp_endpoint("http://viewer:5001/v1/traces") == (
+                "http://viewer:5001/v1/traces"
+            )
+
+    def test_resolve_is_none_when_nothing_answers(self):
+        from nooa.tracing import resolve_otlp_endpoint
+
+        with patch("urllib.request.urlopen", side_effect=ConnectionRefusedError()):
+            assert resolve_otlp_endpoint("http://viewer:5001/v1/traces") is None

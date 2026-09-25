@@ -212,11 +212,39 @@ def probe_otlp_endpoint(endpoint: str, timeout: float | None = None) -> bool:
         with urllib.request.urlopen(req, timeout=timeout):
             pass
         return True
-    except urllib.error.HTTPError:
-        # Server is up but returned an error (e.g. 400, 405) — still reachable
-        return True
+    except urllib.error.HTTPError as exc:
+        # A plain-HTTP request to an HTTPS-only server gets a 400 whose body
+        # says so; every export would fail the same way, so that is "not
+        # reachable at this URL". Any other error means the server is up.
+        return not _is_https_only_reply(exc)
     except Exception:
         return False
+
+
+def _is_https_only_reply(exc: urllib.error.HTTPError) -> bool:
+    if exc.code != 400:
+        return False
+    try:
+        body = exc.read(512).decode("utf-8", "replace")
+    except Exception:
+        return False
+    return "https" in body.lower()
+
+
+def resolve_otlp_endpoint(endpoint: str, timeout: float | None = None) -> str | None:
+    """The endpoint to export to: ``endpoint`` if reachable, else its https
+    twin when the server only speaks HTTPS, else ``None``.
+
+    A configured ``http://host:port`` for a viewer that serves HTTPS on that
+    port is a common misconfiguration; the health probe tells the two apart.
+    """
+    if probe_otlp_endpoint(endpoint, timeout):
+        return endpoint
+    if endpoint.startswith("http://"):
+        upgraded = "https://" + endpoint[len("http://") :]
+        if probe_otlp_endpoint(upgraded, timeout):
+            return upgraded
+    return None
 
 
 def enable_tracing(
@@ -433,8 +461,14 @@ def _default_exporters() -> list[SpanExporter] | None:
     explicit_endpoint = os.getenv("OTLP_ENDPOINT")
     endpoint = explicit_endpoint or "http://localhost:5001/v1/traces"
 
-    if probe_otlp_endpoint(endpoint):
-        return [exporters_mod.journal(endpoint=endpoint)]
+    resolved = resolve_otlp_endpoint(endpoint)
+    if resolved is not None:
+        if resolved != endpoint:
+            print(
+                f"OTLP_ENDPOINT ({endpoint}) answers only over HTTPS; exporting to {resolved}.",
+                file=sys.stderr,
+            )
+        return [exporters_mod.journal(endpoint=resolved)]
 
     _probe_failed = True
 
@@ -535,6 +569,7 @@ __all__ = [
     "end_active_spans",
     "exporters",
     "probe_otlp_endpoint",
+    "resolve_otlp_endpoint",
     "set_session",
     "session_scope",
     "get_session",
