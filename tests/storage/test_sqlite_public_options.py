@@ -2,7 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """SQLiteStorageManager public options: save_snapshot_json, must_exist, journal_mode."""
 
+import fcntl
 import json
+import os
+import socket
 import sqlite3
 import threading
 from unittest import mock
@@ -130,3 +133,22 @@ def test_journal_mode_rejects_other_values(tmp_path):
     with pytest.raises(ValueError):
         SQLiteStorageManager(tmp_path / "x.db", journal_mode="truncate")  # type: ignore[arg-type]
     assert not (tmp_path / "x.db").exists()
+
+
+def test_lock_helpers_are_public_and_keep_their_private_aliases(tmp_path):
+    import nooa.storage
+    from nooa.storage import acquire_session_lock, read_lock_owner
+
+    assert "acquire_session_lock" in nooa.storage.__all__
+    assert "read_lock_owner" in nooa.storage.__all__
+    assert sqlite_module._acquire_session_lock is acquire_session_lock
+    assert sqlite_module._read_lock_owner is read_lock_owner
+
+    lock_path = str(tmp_path / "s.lock")
+    assert read_lock_owner(lock_path) == (None, None)
+    fd = acquire_session_lock(lock_path)
+    try:
+        assert read_lock_owner(lock_path) == (os.getpid(), socket.gethostname())
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)

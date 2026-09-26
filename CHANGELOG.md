@@ -47,6 +47,8 @@ to follow semantic versioning.
   - `SQLiteStorageManager` takes `must_exist=True` (a missing file raises
     instead of being created empty) and `journal_mode="wal" | "delete"`
     (default `None` keeps the virtiofs detection).
+  - `nooa.storage` exports `acquire_session_lock` and `read_lock_owner`
+    (the underscore names remain as aliases).
 - Tracing: a plain-HTTP `OTLP_ENDPOINT` for a viewer that serves HTTPS on
   that port no longer counts as reachable. The probe recognises the 400
   "HTTP request to an HTTPS server" reply, and the default exporter set-up

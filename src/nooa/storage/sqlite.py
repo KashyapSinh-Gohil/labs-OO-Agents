@@ -618,11 +618,11 @@ class SessionAlreadyActiveError(Exception):
         self.owner_pid = owner_pid
 
 
-def _read_lock_owner(lock_path: str) -> tuple[int | None, str | None]:
+def read_lock_owner(lock_path: str) -> tuple[int | None, str | None]:
     """The ``(pid, host)`` written by the process holding the lock; ``(None, None)`` if blank.
 
     The lock file content is ``<pid> <hostname>`` (older files: just the pid;
-    see ``_acquire_session_lock``). A blank file means the owner closed
+    see ``acquire_session_lock``). A blank file means the owner closed
     cleanly. Returns ``(None, None)`` if the file is missing, empty or not
     parseable.
     """
@@ -641,8 +641,8 @@ def _read_lock_owner(lock_path: str) -> tuple[int | None, str | None]:
 
 
 def _read_lock_pid(lock_path: str) -> int | None:
-    """The owner PID recorded in the lock file, or None (see ``_read_lock_owner``)."""
-    return _read_lock_owner(lock_path)[0]
+    """The owner PID recorded in the lock file, or None (see ``read_lock_owner``)."""
+    return read_lock_owner(lock_path)[0]
 
 
 def _lock_owner_record() -> bytes:
@@ -657,7 +657,7 @@ def _lock_owner_record() -> bytes:
 
 def _blank_lock_if_ours(lock_path: str) -> None:
     """Empty the lock file if it still names this process (a clean close)."""
-    pid, host = _read_lock_owner(lock_path)
+    pid, host = read_lock_owner(lock_path)
     if pid != os.getpid() or (host is not None and host != socket.gethostname()):
         return
     try:
@@ -667,7 +667,7 @@ def _blank_lock_if_ours(lock_path: str) -> None:
         pass
 
 
-def _acquire_session_lock(lock_path: str) -> int:
+def acquire_session_lock(lock_path: str) -> int:
     """Acquire an exclusive flock on *lock_path*, returning the held fd.
 
     Raises SessionAlreadyActiveError, annotated with the recorded owner PID
@@ -676,9 +676,13 @@ def _acquire_session_lock(lock_path: str) -> int:
     process dies, so a genuine crash doesn't wedge the next run — no
     stale-file cleanup needed here.
 
-    Lock file contents: the ASCII decimal PID of the current owner. We
-    truncate before writing so a shorter PID can't leave trailing digits
-    from a longer predecessor.
+    Lock file contents: ``<pid> <hostname>`` of the current owner (read it
+    with ``read_lock_owner``). We truncate before writing so a shorter
+    record can't leave trailing bytes from a longer predecessor.
+
+    The caller releases the lock with ``fcntl.flock(fd, fcntl.LOCK_UN)``
+    and ``os.close(fd)``. Taking the lock only to test whether a session is
+    free still rewrites the record with this process's pid and host.
     """
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
     try:
@@ -707,6 +711,11 @@ def _acquire_session_lock(lock_path: str) -> int:
     return fd
 
 
+# Former private names, kept for existing callers.
+_acquire_session_lock = acquire_session_lock
+_read_lock_owner = read_lock_owner
+
+
 def delete_sqlite_database(db_path: str | Path) -> bool:
     """Delete an inactive SQLite database and its WAL/SHM sidecars.
 
@@ -727,7 +736,7 @@ def delete_sqlite_database(db_path: str | Path) -> bool:
         return False
 
     lock_path = str(path.with_suffix(".lock"))
-    lock_fd = _acquire_session_lock(lock_path)
+    lock_fd = acquire_session_lock(lock_path)
     try:
         existed = path.exists()
         for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
@@ -804,7 +813,7 @@ class SQLiteStorageManager:
 
         if self._db_path != ":memory:":
             lock_path = str(Path(self._db_path).with_suffix(".lock"))
-            self._lock_fd = _acquire_session_lock(lock_path)
+            self._lock_fd = acquire_session_lock(lock_path)
 
         self._db_lock = threading.RLock()
 

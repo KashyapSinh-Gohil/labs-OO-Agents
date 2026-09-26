@@ -12,7 +12,9 @@ from nooa.storage.snapshot import AgentSnapshot
 from nooa.storage.sqlite import (
     SessionAlreadyActiveError,
     SQLiteStorageManager,
+    acquire_session_lock,
     delete_sqlite_database,
+    read_lock_owner,
 )
 
 __all__ = [
@@ -23,9 +25,11 @@ __all__ = [
     "SQLiteStorageManager",
     "SessionAlreadyActiveError",
     "StorageManager",
+    "acquire_session_lock",
     "deserialize",
     "delete_sqlite_database",
     "nosnapshot",
+    "read_lock_owner",
     "serialize",
     "snapshotable",
     "snapshot_from_json",
