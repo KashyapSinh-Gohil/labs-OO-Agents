@@ -52,6 +52,9 @@ to follow semantic versioning.
   - `nooa.tools` exports `BashSession`, `StreamEvent` and `StreamDone`;
     `nooa.runtime.channels.ChannelReader` is the public name of the channel
     read facade (`_ChannelReader` remains as an alias).
+  - `nooa.tracing.register_hooks_in_current_context()` installs the tracing
+    hooks in a context that did not inherit them, for hosts that run agents
+    in fresh asyncio or thread contexts.
 - Tracing: a plain-HTTP `OTLP_ENDPOINT` for a viewer that serves HTTPS on
   that port no longer counts as reachable. The probe recognises the 400
   "HTTP request to an HTTPS server" reply, and the default exporter set-up

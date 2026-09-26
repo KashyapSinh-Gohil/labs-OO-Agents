@@ -100,3 +100,38 @@ class TestHooksRegisteredPerTask:
         assert get_hooks() is None, (
             "Hooks set inside a Task must not leak into the main thread's context"
         )
+
+
+def test_register_hooks_in_current_context_is_public_and_idempotent():
+    """A host running an agent in a fresh context installs the tracing hooks itself."""
+    import contextvars
+
+    import nooa.tracing as tracing
+    from nooa.runtime.hooks import get_hooks
+    from nooa.tracing import enable_tracing, exporters
+
+    assert "register_hooks_in_current_context" in tracing.__all__
+    assert tracing._re_register_hooks is tracing.register_hooks_in_current_context
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        loop = asyncio.new_event_loop()
+        try:
+
+            async def enable():
+                enable_tracing(exporters=[exporters.jsonl(tmpdir)])
+
+            loop.run_until_complete(enable())
+        finally:
+            loop.close()
+
+        def fresh() -> tuple[object, object, object]:
+            before = get_hooks()
+            tracing.register_hooks_in_current_context()
+            once = get_hooks()
+            tracing.register_hooks_in_current_context()
+            return before, once, get_hooks()
+
+        before, once, twice = contextvars.Context().run(fresh)
+        assert before is None
+        assert once is not None
+        assert twice is once

@@ -286,7 +286,7 @@ def enable_tracing(
     # --- Fast paths for no-arg (auto-probe) calls --------------------------
     if exporters is None:
         if _enabled and _provider is not None:
-            _re_register_hooks()
+            register_hooks_in_current_context()
             return
         if _probe_failed:
             return
@@ -303,7 +303,7 @@ def enable_tracing(
         # Task context from the calling thread each time, so hooks set in a previous
         # Task are invisible here.  Without this, task 2+ in a persistent subprocess
         # worker have no hooks → no AGENT/GENERATION spans.
-        _re_register_hooks()
+        register_hooks_in_current_context()
         return
 
     # --- First-time setup --------------------------------------------------
@@ -364,7 +364,7 @@ def enable_tracing(
     _provider = tracer_provider
 
     # Instrument nooa hooks; capture the instance for re-registration
-    # in future asyncio task contexts (see _re_register_hooks).
+    # in future asyncio task contexts (see register_hooks_in_current_context).
     with contextlib.suppress(ImportError):
         instrumentor = NOOAInstrumentor()
         instrumentor.instrument(tracer_provider=tracer_provider)
@@ -380,8 +380,18 @@ def enable_tracing(
     _enabled = True
 
 
-def _re_register_hooks() -> None:
-    """Re-register instrumentation hooks in the current async context.
+def register_hooks_in_current_context() -> None:
+    """Install the tracing hooks in the current context, if tracing is enabled.
+
+    Hooks live in a ContextVar, so a context created without copying the
+    one that ran :func:`enable_tracing` (a fresh ``contextvars.Context()``,
+    a thread started without ``copy_context()``, or an asyncio Task copied
+    from a context that never had them) runs agents with no hooks and emits
+    no AGENT/GENERATION spans. A host that runs agents that way calls this
+    at the start of each such context. It composes with any hooks already
+    set there, is a no-op when tracing is off, and is safe to call twice.
+
+    Details of the case it was written for:
 
     Hooks are stored in a ContextVar (``_instrumentation_hooks_var``).  When
     the eval pipeline uses a persistent subprocess worker, each task is run via
@@ -397,6 +407,10 @@ def _re_register_hooks() -> None:
         from nooa.runtime.hooks import compose_hooks, get_hooks, set_hooks
 
         set_hooks(compose_hooks(get_hooks(), _hooks))
+
+
+# Former private name, kept for existing callers.
+_re_register_hooks = register_hooks_in_current_context
 
 
 def _add_exporters(provider: TracerProvider, exporters: list[SpanExporter]) -> None:
@@ -569,6 +583,7 @@ __all__ = [
     "end_active_spans",
     "exporters",
     "probe_otlp_endpoint",
+    "register_hooks_in_current_context",
     "resolve_otlp_endpoint",
     "set_session",
     "session_scope",
