@@ -763,9 +763,10 @@ class SQLiteStorageManager:
     """
 
     def __init__(self, db_path: str | Path = ":memory:", *, check_same_thread: bool = True) -> None:
-        # Safety invariant for check_same_thread=False: callers (the TUI)
-        # guarantee that all DB access is serialized through a single
-        # asyncio event loop on the agent thread. No concurrent writes.
+        # Safety invariant for check_same_thread=False: every use of the
+        # connection holds self._db_lock (the event backend, the snapshot
+        # methods, close), so calls from several threads are serialised.
+        # save_snapshot_json() relies on this to run in a worker thread.
         self._db_path = str(db_path)
         self._check_same_thread = check_same_thread
         self._lock_fd: int | None = None
@@ -846,14 +847,42 @@ class SQLiteStorageManager:
 
     def save_snapshot(self, agent: Agent) -> str:
         snapshot = AgentSnapshot.from_agent(agent)
-        data = snapshot_to_dict(snapshot)
-        snapshot_id = str(uuid.uuid4())
-        created_at = datetime.now(UTC).isoformat()
+        return self.save_snapshot_json(json.dumps(snapshot_to_dict(snapshot)))
+
+    def save_snapshot_json(
+        self,
+        data: str,
+        *,
+        snapshot_id: str | None = None,
+        created_at: str | None = None,
+    ) -> str:
+        """Store an already serialised snapshot and return its ``snapshot_id``.
+
+        ``data`` is the JSON text of a snapshot (for example
+        ``json.dumps(snapshot_to_json(agent))``); it is checked to be JSON
+        and stored as given, so ``restore_snapshot`` reads it back.
+        ``snapshot_id`` defaults to a new UUID and ``created_at`` to the
+        current UTC time in ISO format; ``get_latest_snapshot_id`` orders by
+        ``created_at``.
+
+        The write takes this manager's lock, the same lock every event write
+        takes, so it never interleaves with them. That makes it safe to call
+        from a worker thread (``asyncio.to_thread``) to keep a large snapshot
+        write off the event loop, provided the manager was opened with
+        ``check_same_thread=False``; with the default ``True``, SQLite refuses
+        use of the connection from any thread but the one that opened it.
+
+        Raises:
+            ValueError: If ``data`` is not valid JSON.
+        """
+        json.loads(data)  # JSONDecodeError is a ValueError
+        snapshot_id = snapshot_id or str(uuid.uuid4())
+        created_at = created_at or datetime.now(UTC).isoformat()
         with self._db_lock:
             with self._conn:
                 self._conn.execute(
                     "INSERT INTO snapshots (snapshot_id, created_at, data) VALUES (?, ?, ?)",
-                    (snapshot_id, created_at, json.dumps(data)),
+                    (snapshot_id, created_at, data),
                 )
         return snapshot_id
 

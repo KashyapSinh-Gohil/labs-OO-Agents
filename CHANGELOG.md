@@ -41,6 +41,9 @@ to follow semantic versioning.
   - `EventBase.event_role` returns an event's provider role (its `_role`
     class variable). It is not called `role` so a subclass can still
     declare a field of that name.
+  - `SQLiteStorageManager.save_snapshot_json(data)` stores an already
+    serialised snapshot under the manager's own lock; with
+    `check_same_thread=False` it may be called from a worker thread.
 - Tracing: a plain-HTTP `OTLP_ENDPOINT` for a viewer that serves HTTPS on
   that port no longer counts as reachable. The probe recognises the 400
   "HTTP request to an HTTPS server" reply, and the default exporter set-up
