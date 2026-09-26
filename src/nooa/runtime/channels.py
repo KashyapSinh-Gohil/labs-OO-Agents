@@ -424,6 +424,23 @@ class Channel[T]:
         """
         self._on_discard = callback
 
+    @property
+    def on_get(self) -> Callable[[T], None] | None:
+        """The current ``on_get`` hook, or ``None``.
+
+        Read-only: bind with ``set_on_get()``. A caller that adds its own
+        hook reads this first and calls it from the new one to keep both.
+        """
+        return self._on_get
+
+    @property
+    def on_discard(self) -> Callable[[list[T]], None] | None:
+        """The current ``on_discard`` hook, or ``None``.
+
+        Read-only: bind with ``set_on_discard()``; chain as for ``on_get``.
+        """
+        return self._on_discard
+
     def _fire_on_discard(self, items: list[T]) -> None:
         if not items or self._on_discard is None:
             return
@@ -461,6 +478,25 @@ class Channel[T]:
         item = self._items.pop()
         self._fire_on_discard([item])
         return item
+
+    def remove(self, item: T) -> bool:
+        """Withdraw one pending item, matched by identity (``is``), not equality.
+
+        Removes the occurrence nearest the head when the same object is
+        queued more than once. Returns ``True`` if an item was removed,
+        ``False`` if ``item`` is not pending (always ``False`` in event
+        mode).
+
+        Neither hook fires: the item was not consumed, so ``on_get`` does
+        not apply, and a withdraw is the caller's own decision rather than
+        a drop it needs to be told about, so ``on_discard`` does not fire
+        either. A caller tracking queued items updates its own record.
+        """
+        for position, queued in enumerate(self._items):
+            if queued is item:
+                del self._items[position]
+                return True
+        return False
 
     def clear(self) -> None:
         dropped = list(self._items)

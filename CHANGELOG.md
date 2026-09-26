@@ -35,6 +35,9 @@ to follow semantic versioning.
   - A session lock file records `<pid> <hostname>` and is blanked on a
     clean close, so another machine sharing the directory can tell the
     session is in use.
+  - `Channel.remove(item)` withdraws one pending item by identity without
+    firing either hook; read-only `Channel.on_get` and `Channel.on_discard`
+    return the current hooks so a caller can chain them.
 - Tracing: a plain-HTTP `OTLP_ENDPOINT` for a viewer that serves HTTPS on
   that port no longer counts as reachable. The probe recognises the 400
   "HTTP request to an HTTPS server" reply, and the default exporter set-up

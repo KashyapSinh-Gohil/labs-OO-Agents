@@ -190,3 +190,76 @@ def test_on_discard_is_not_fired_for_consumed_items_and_its_errors_are_swallowed
     q.put("b")
     assert q.flush() == 1
     assert q.qsize() == 0
+
+
+# ---------------------------------------------------------------------------
+# Channel.remove and the on_get / on_discard getters
+# ---------------------------------------------------------------------------
+
+
+def test_remove_withdraws_one_item_by_identity_without_firing_hooks():
+    got: list[object] = []
+    dropped: list[list[object]] = []
+    q: Channel[object] = Channel("q", "queue", on_get=got.append)
+    q.set_on_discard(dropped.append)
+    first, second, equal_not_same = ["a"], ["b"], ["a"]
+    q.put(first)
+    q.put(second)
+    q.put(first)
+
+    assert q.remove(equal_not_same) is False  # equality is not enough
+    assert q.remove(first) is True  # the head occurrence goes first
+    assert q.snapshot() == [second, first]
+    assert q.snapshot()[1] is first
+    assert q.remove(first) is True
+    assert q.remove(first) is False
+    assert q.snapshot() == [second]
+    # A withdraw is neither a consume nor a discard.
+    assert got == []
+    assert dropped == []
+
+
+def test_remove_on_event_channel_returns_false():
+    q: Channel[str] = Channel("e", "event")
+    assert q.remove("x") is False
+
+
+def test_hook_getters_return_current_callbacks_for_chaining():
+    q: Channel[str] = Channel("q", "queue")
+    assert q.on_get is None
+    assert q.on_discard is None
+
+    first: list[str] = []
+    q.set_on_get(first.append)
+    q.set_on_discard(lambda items: first.extend(f"x{i}" for i in items))
+    assert q.on_get is not None
+
+    previous_get, previous_discard = q.on_get, q.on_discard
+    second: list[str] = []
+
+    def chained_get(item: str) -> None:
+        second.append(item)
+        previous_get(item)
+
+    def chained_discard(items: list[str]) -> None:
+        second.extend(f"x{i}" for i in items)
+        previous_discard(items)
+
+    q.set_on_get(chained_get)
+    q.set_on_discard(chained_discard)
+    assert q.on_get is chained_get
+    assert q.on_discard is chained_discard
+
+    q.put("a")
+    q.put("b")
+    assert q.drain() == ["a", "b"]
+    q.put("c")
+    q.clear()
+    assert first == ["a", "b", "xc"]
+    assert second == ["a", "b", "xc"]
+
+
+def test_hook_getters_are_read_only():
+    q: Channel[str] = Channel("q", "queue")
+    with pytest.raises(AttributeError):
+        q.on_get = print  # type: ignore[misc]
