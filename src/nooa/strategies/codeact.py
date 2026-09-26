@@ -83,6 +83,23 @@ logger = logging.getLogger(__name__)
 
 _EXECUTE_PYTHON_RECEIPT = "status: accepted"
 
+OUTPUT_TOKENS_EXHAUSTED_MESSAGE = (
+    "The model used all available output tokens before completing a tool call. "
+    "Increase `max_tokens` (16384 or more is often needed for reasoning models "
+    "such as GPT-5.5 and o-series)."
+)
+"""The ``GenerationError`` message when a response stops at its output-token limit."""
+
+MAX_ITERATIONS_MESSAGE = (
+    "Generation failed after {iterations} iterations (max_iterations={max_iterations}). "
+    "Unable to complete `{method}`."
+)
+"""The ``GenerationError`` message (a ``str.format`` template) when iterations run out.
+
+Hosts map these two to protocol stop reasons, so they are named here rather
+than repeated as literals.
+"""
+
 
 @dataclass(frozen=True)
 class TextOnlyResponseContext:
@@ -300,8 +317,11 @@ class CodeActSession:
                 f"Unable to generate valid code for `{self.target_method_name}`."
             )
         return GenerationError(
-            f"Generation failed after {self.iteration} iterations (max_iterations={self.max_iterations}). "
-            f"Unable to complete `{self.target_method_name}`."
+            MAX_ITERATIONS_MESSAGE.format(
+                iterations=self.iteration,
+                max_iterations=self.max_iterations,
+                method=self.target_method_name,
+            )
         )
 
     @asynccontextmanager
@@ -1032,11 +1052,7 @@ Standard Python builtins and agent instance (`self`) are available."""
                         )
                     )
                     turn_state.is_final = True
-                    raise GenerationError(
-                        "The model used all available output tokens before completing "
-                        "a tool call. Increase `max_tokens` (16384 or more is often "
-                        "needed for reasoning models such as GPT-5.5 and o-series)."
-                    )
+                    raise GenerationError(OUTPUT_TOKENS_EXHAUSTED_MESSAGE)
 
                 # A provider-declared error is incomplete even if it includes
                 # partial text. Preserve that output for diagnostics, but do
