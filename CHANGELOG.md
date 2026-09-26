@@ -21,6 +21,20 @@ to follow semantic versioning.
     unattended turns. `handle()` accepts the new types and still accepts
     `RespondResult`.
   - The bench `TaskResult` gains an optional `report` field.
+  - `Channel.set_on_discard()` binds a hook fired with the pending items
+    that `flush()`, `clear()`, `pop_last()` and `remove_channel()` drop
+    without a consumer.
+  - `nooa.strategies.codeact` names its two generation-limit messages,
+    `OUTPUT_TOKENS_EXHAUSTED_MESSAGE` and `MAX_ITERATIONS_MESSAGE`, so hosts
+    can map them without copying the wording.
+  - The `<skills>` block lists available skills as one comma-separated line
+    of names (importing nothing); `SkillRegistry.search(query)` finds skills
+    by name or one-line description.
+  - `TodoManager.status()` shows at most the two newest done todos when no
+    todo is active; the rest are counted.
+  - A session lock file records `<pid> <hostname>` and is blanked on a
+    clean close, so another machine sharing the directory can tell the
+    session is in use.
 - Tracing: a plain-HTTP `OTLP_ENDPOINT` for a viewer that serves HTTPS on
   that port no longer counts as reachable. The probe recognises the 400
   "HTTP request to an HTTPS server" reply, and the default exporter set-up
