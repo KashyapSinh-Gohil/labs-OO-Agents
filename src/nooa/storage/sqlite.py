@@ -21,7 +21,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import ValidationError as PydanticValidationError
 
@@ -755,20 +755,50 @@ class SQLiteStorageManager:
     Args:
         db_path: Path to SQLite database file. Use ":memory:" for in-memory
                  (useful for testing).
+        check_same_thread: Passed to ``sqlite3.connect``. ``False`` lets
+            other threads use the manager (see ``save_snapshot_json``).
+        must_exist: Open the file with SQLite's ``mode=rw`` URI, so a
+            missing file raises ``sqlite3.OperationalError`` instead of
+            being created empty (for example when a delete races an open).
+            Not valid with ``":memory:"``.
+        journal_mode: ``"wal"`` or ``"delete"`` to choose SQLite's journal.
+            ``None`` (the default) uses the rollback journal (``"delete"``)
+            on a detected virtiofs mount and WAL elsewhere. Choose
+            ``"delete"`` for a file another machine may open over a shared
+            mount: WAL keeps cross-process state in a shared-memory file
+            that two kernels do not share. A file left in WAL mode is
+            converted on open. ``synchronous=FULL`` is used in every mode.
 
     Raises:
         SessionAlreadyActiveError: If ``db_path`` is already open in another
             process.  The caller should start a fresh session instead of
             resuming this one.
+        sqlite3.OperationalError: If ``must_exist`` is set and the file is
+            missing.
+        ValueError: For ``must_exist`` with ``":memory:"`` or an unknown
+            ``journal_mode``.
     """
 
-    def __init__(self, db_path: str | Path = ":memory:", *, check_same_thread: bool = True) -> None:
+    def __init__(
+        self,
+        db_path: str | Path = ":memory:",
+        *,
+        check_same_thread: bool = True,
+        must_exist: bool = False,
+        journal_mode: Literal["wal", "delete"] | None = None,
+    ) -> None:
+        if journal_mode not in (None, "wal", "delete"):
+            raise ValueError(f"journal_mode must be 'wal', 'delete' or None, got {journal_mode!r}")
+        if must_exist and str(db_path) == ":memory:":
+            raise ValueError("must_exist cannot be used with an in-memory database")
         # Safety invariant for check_same_thread=False: every use of the
         # connection holds self._db_lock (the event backend, the snapshot
         # methods, close), so calls from several threads are serialised.
         # save_snapshot_json() relies on this to run in a worker thread.
         self._db_path = str(db_path)
         self._check_same_thread = check_same_thread
+        self._must_exist = must_exist
+        self._journal_mode = journal_mode
         self._lock_fd: int | None = None
         self._closed = False
 
@@ -789,29 +819,33 @@ class SQLiteStorageManager:
 
     def _open_connection(self) -> sqlite3.Connection:
         """Create and configure a new SQLite connection."""
-        conn = sqlite3.connect(self._db_path, check_same_thread=self._check_same_thread)
+        if self._must_exist:
+            uri = f"{Path(self._db_path).resolve().as_uri()}?mode=rw"
+            conn = sqlite3.connect(uri, uri=True, check_same_thread=self._check_same_thread)
+        else:
+            conn = sqlite3.connect(self._db_path, check_same_thread=self._check_same_thread)
         # Retry up to 5 s on SQLITE_BUSY before raising, giving concurrent
         # readers time to release shared locks on virtiofs/FUSE mounts.
         conn.execute("PRAGMA busy_timeout=5000")
-        if _is_virtiofs(self._db_path):
+        journal_mode = self._journal_mode
+        if journal_mode is None:
             # virtiofs (Docker Desktop file sharing) has weak fsync semantics.
-            # Avoid WAL entirely: its checkpoint step can lose pages on crash,
+            # Avoid WAL there: its checkpoint step can lose pages on crash,
             # producing zeroed pages. DELETE journal + FULL sync preserves the
             # original page until the replacement is durably committed.
-            conn.execute("PRAGMA journal_mode=DELETE")
-            conn.execute("PRAGMA synchronous=FULL")
-            logger.info(
-                "Detected virtiofs at %s — using journal_mode=DELETE + synchronous=FULL",
-                self._db_path,
-            )
-        else:
-            conn.execute("PRAGMA journal_mode=WAL")
-            # synchronous=FULL even on normal disks: with the default NORMAL,
-            # a disk-full (ENOSPC) during a WAL commit/checkpoint can persist
-            # partially-written or zeroed pages, surfacing later as
-            # "database disk image is malformed". FULL fsyncs before the commit
-            # is acknowledged, so an interrupted write rolls back cleanly.
-            conn.execute("PRAGMA synchronous=FULL")
+            journal_mode = "delete" if _is_virtiofs(self._db_path) else "wal"
+            if journal_mode == "delete":
+                logger.info(
+                    "Detected virtiofs at %s — using journal_mode=DELETE + synchronous=FULL",
+                    self._db_path,
+                )
+        conn.execute(f"PRAGMA journal_mode={journal_mode.upper()}")
+        # synchronous=FULL in every mode: with the default NORMAL, a disk-full
+        # (ENOSPC) during a WAL commit/checkpoint can persist partially-written
+        # or zeroed pages, surfacing later as "database disk image is
+        # malformed". FULL fsyncs before the commit is acknowledged, so an
+        # interrupted write rolls back cleanly.
+        conn.execute("PRAGMA synchronous=FULL")
         return conn
 
     def _reconnect(self) -> None:

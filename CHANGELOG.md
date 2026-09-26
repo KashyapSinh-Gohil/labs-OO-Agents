@@ -44,6 +44,9 @@ to follow semantic versioning.
   - `SQLiteStorageManager.save_snapshot_json(data)` stores an already
     serialised snapshot under the manager's own lock; with
     `check_same_thread=False` it may be called from a worker thread.
+  - `SQLiteStorageManager` takes `must_exist=True` (a missing file raises
+    instead of being created empty) and `journal_mode="wal" | "delete"`
+    (default `None` keeps the virtiofs detection).
 - Tracing: a plain-HTTP `OTLP_ENDPOINT` for a viewer that serves HTTPS on
   that port no longer counts as reachable. The probe recognises the 400
   "HTTP request to an HTTPS server" reply, and the default exporter set-up
