@@ -11,6 +11,7 @@ import fcntl
 import json
 import logging
 import os
+import socket
 import sqlite3
 import subprocess
 import threading
@@ -617,23 +618,53 @@ class SessionAlreadyActiveError(Exception):
         self.owner_pid = owner_pid
 
 
-def _read_lock_pid(lock_path: str) -> int | None:
-    """Read the owner PID written by whichever process currently holds the lock.
+def _read_lock_owner(lock_path: str) -> tuple[int | None, str | None]:
+    """The ``(pid, host)`` written by the process holding the lock; ``(None, None)`` if blank.
 
-    The lock file content is just ASCII digits (see ``_acquire_session_lock``).
-    Returns None if the file is missing, empty, or not parseable.
+    The lock file content is ``<pid> <hostname>`` (older files: just the pid;
+    see ``_acquire_session_lock``). A blank file means the owner closed
+    cleanly. Returns ``(None, None)`` if the file is missing, empty or not
+    parseable.
     """
     try:
         with open(lock_path, "rb") as f:
-            raw = f.read(32).strip()
+            raw = f.read(512).decode("utf-8", "replace").strip()
     except OSError:
-        return None
+        return None, None
     if not raw:
-        return None
+        return None, None
+    pid_text, _, host = raw.partition(" ")
     try:
-        return int(raw)
+        return int(pid_text), (host.strip() or None)
     except ValueError:
-        return None
+        return None, None
+
+
+def _read_lock_pid(lock_path: str) -> int | None:
+    """The owner PID recorded in the lock file, or None (see ``_read_lock_owner``)."""
+    return _read_lock_owner(lock_path)[0]
+
+
+def _lock_owner_record() -> bytes:
+    """What this process writes into a lock file it holds: ``<pid> <hostname>``.
+
+    The hostname lets a process on another machine sharing the directory
+    (a sandbox and its host) tell that the session is in use there, since
+    the kernel lock itself is not visible across the mount.
+    """
+    return f"{os.getpid()} {socket.gethostname()}".encode()
+
+
+def _blank_lock_if_ours(lock_path: str) -> None:
+    """Empty the lock file if it still names this process (a clean close)."""
+    pid, host = _read_lock_owner(lock_path)
+    if pid != os.getpid() or (host is not None and host != socket.gethostname()):
+        return
+    try:
+        with open(lock_path, "r+b") as f:
+            f.truncate(0)
+    except OSError:
+        pass
 
 
 def _acquire_session_lock(lock_path: str) -> int:
@@ -669,10 +700,10 @@ def _acquire_session_lock(lock_path: str) -> int:
             )
         raise SessionAlreadyActiveError(msg, session_id=session_id, owner_pid=owner_pid) from None
 
-    # Holder now; replace any stale predecessor PID with ours.
+    # Holder now; replace any stale predecessor record with ours.
     os.lseek(fd, 0, os.SEEK_SET)
     os.ftruncate(fd, 0)
-    os.write(fd, str(os.getpid()).encode())
+    os.write(fd, _lock_owner_record())
     return fd
 
 
@@ -883,6 +914,10 @@ class SQLiteStorageManager:
                         conn.close()
         finally:
             if self._lock_fd is not None:
+                # Blank the record before releasing, so a machine that cannot see
+                # the kernel lock reads "free" and not a stale owner.
+                if self._db_path != ":memory:":
+                    _blank_lock_if_ours(str(Path(self._db_path).with_suffix(".lock")))
                 fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
                 os.close(self._lock_fd)
                 self._lock_fd = None
