@@ -87,7 +87,7 @@ class EventBase(BaseModel):
 
     Subclasses define:
     - event_type: Auto-derived from class name (repr=False), or explicit override
-    - _role: ClassVar for provider role
+    - _role: ClassVar for provider role (read it through ``event_role``)
     - Public fields which are rendered via pformat()
 
     Auto-registration: When a subclass is defined, ``__init_subclass__``
@@ -98,6 +98,17 @@ class EventBase(BaseModel):
     """
 
     _role: ClassVar[Role] = Role.USER
+
+    @property
+    def event_role(self) -> Role:
+        """The provider role this event type renders as (its ``_role`` class variable).
+
+        Read-only; subclasses set it by overriding ``_role``. Named
+        ``event_role`` rather than ``role`` so a subclass may still declare a
+        field called ``role``: a base-class property of that name would
+        silently take precedence over the field.
+        """
+        return type(self)._role
 
     @property
     def is_empty(self) -> bool:

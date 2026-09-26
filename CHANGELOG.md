@@ -38,6 +38,9 @@ to follow semantic versioning.
   - `Channel.remove(item)` withdraws one pending item by identity without
     firing either hook; read-only `Channel.on_get` and `Channel.on_discard`
     return the current hooks so a caller can chain them.
+  - `EventBase.event_role` returns an event's provider role (its `_role`
+    class variable). It is not called `role` so a subclass can still
+    declare a field of that name.
 - Tracing: a plain-HTTP `OTLP_ENDPOINT` for a viewer that serves HTTPS on
   that port no longer counts as reachable. The probe recognises the 400
   "HTTP request to an HTTPS server" reply, and the default exporter set-up
