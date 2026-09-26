@@ -6,6 +6,10 @@ to follow semantic versioning.
 
 ## [Unreleased]
 
+- `import nooa` no longer loads the strategies, the LLM client or LiteLLM
+  (about 3.3 s down to 0.3 s here). The strategy names, `LLMResponse` and
+  `llm_config_chain` load on first use; `from nooa import CodeActStrategy`
+  and `from nooa import *` work as before.
 - Groundwork for the session tree design, in shared code:
   - A cancelled CodeAct cell is now recorded for the model: an appended
     `PythonOutput` with the new `ResultStatus.CANCELLED` carries the stdout
