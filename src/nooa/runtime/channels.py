@@ -549,7 +549,7 @@ class Channel[T]:
         return f"Channel(name={self.name!r}, mode='event')"
 
     @property
-    def reader(self) -> "_ChannelReader[T]":
+    def reader(self) -> "ChannelReader[T]":
         """Read-only facade for LLM exposure.
 
         Use when attaching to an agent: keep the underlying ``Channel``
@@ -563,12 +563,12 @@ class Channel[T]:
         """
         cached = getattr(self, "_reader_cache", None)
         if cached is None:
-            cached = _ChannelReader(self)
+            cached = ChannelReader(self)
             self._reader_cache = cached
         return cached
 
 
-class _ChannelReader[T]:
+class ChannelReader[T]:
     """LLM-facing read facade for a queue-mode ``Channel``.
 
     Exposes ``get()`` / ``qsize()`` / ``status()`` / ``name``. ``get()``
@@ -626,6 +626,10 @@ class _ChannelReader[T]:
 
     def __repr__(self) -> str:
         return f"ChannelReader(name={self.name!r})"
+
+
+# Former private name, kept for existing callers.
+_ChannelReader = ChannelReader
 
 
 # ---------------------------------------------------------------------------

@@ -49,6 +49,9 @@ to follow semantic versioning.
     (default `None` keeps the virtiofs detection).
   - `nooa.storage` exports `acquire_session_lock` and `read_lock_owner`
     (the underscore names remain as aliases).
+  - `nooa.tools` exports `BashSession`, `StreamEvent` and `StreamDone`;
+    `nooa.runtime.channels.ChannelReader` is the public name of the channel
+    read facade (`_ChannelReader` remains as an alias).
 - Tracing: a plain-HTTP `OTLP_ENDPOINT` for a viewer that serves HTTPS on
   that port no longer counts as reachable. The probe recognises the 400
   "HTTP request to an HTTPS server" reply, and the default exporter set-up

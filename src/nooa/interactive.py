@@ -40,7 +40,7 @@ with hidden:
     from nooa.agents import TokenBudgetSummarizer
     from nooa.config import CodeActConfig, PredictConfig  # noqa: F401
     from nooa.events import _json_safe
-    from nooa.runtime.channels import Channel, QueueManager, _ChannelReader
+    from nooa.runtime.channels import Channel, ChannelReader, QueueManager
     from nooa.runtime.producers_skill import ProducersSkill
     from nooa.strategies import CodeActStrategy
     from nooa.tools.web_publisher import WebPublisher
@@ -458,7 +458,7 @@ class InteractiveAgent(Agent, llm=_DEFAULT_LLM):
     _user_messages_in: Annotated[Channel, hidden, nosnapshot]
     # Read-only facade (just .get() / .status() / .name) is what the
     # LLM sees as ``self.user_messages``.
-    user_messages: Annotated[_ChannelReader, nosnapshot]
+    user_messages: Annotated[ChannelReader, nosnapshot]
     # Persistent variables for the LLM — survives across turns AND
     # across sessions (snapshot-backed). Accessed via the ``self.v``
     # proxy for dot-attribute reads/writes (``self.v.spec = "..."``).
