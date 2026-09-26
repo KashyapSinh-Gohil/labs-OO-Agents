@@ -413,3 +413,91 @@ def test_a_directly_assigned_undeclared_attribute_is_not_protected():
     registry = SkillRegistry(agent)
     registry.register("mcp.notes", _Tool())
     assert isinstance(agent.notes, _Tool)
+
+
+# ---------------------------------------------------------------------------
+# Tests: the skills context block and search
+# ---------------------------------------------------------------------------
+
+
+class ChartSkill(Skill):
+    """Inline rich output: interactive charts and images."""
+
+
+class MemorySkill(Skill):
+    """Long-term memory you own and curate."""
+
+
+def _entry_point(name: str, cls: type) -> MagicMock:
+    ep = MagicMock()
+    ep.name = name
+    ep.load.return_value = cls
+    return ep
+
+
+@pytest.fixture
+def listed(agent):
+    """A registry with one active skill and many available ones."""
+    eps = [_entry_point("nemo.web", ChartSkill), _entry_point("nemo.memory", MemorySkill)]
+    eps += [_entry_point(f"extra.skill_{i:02d}", FakeSkill) for i in range(30)]
+    with patch("nooa.skill_registry.entry_points", return_value=eps):
+        reg = SkillRegistry(agent)
+    reg.register("nemo.fake", FakeSkill())
+    reg.register("cmd.review", FakeSkill())
+    reg.activate(["nemo.fake"])
+    return reg, eps
+
+
+class TestStatus:
+    def test_active_skills_keep_one_line_each(self, listed):
+        reg, _ = listed
+        status = reg.status()
+        assert "self.fake" in status
+        assert "A test skill with no constructor args." in status
+
+    def test_available_skills_are_listed_by_name_only(self, listed):
+        reg, eps = listed
+        status = reg.status()
+        header = (
+            "Available skills (32; activate: self.skills.activate(['name']);"
+            " find one: self.skills.search('query')):"
+        )
+        assert header in status
+        available = status[status.index(header) + len(header) :]
+        assert "extra.skill_29, nemo.memory, nemo.web" in " ".join(available.split())
+        # No descriptions, no command skills, and nothing is imported to list names.
+        assert "charts" not in available and "memory you own" not in available
+        assert "cmd.review" not in status
+        assert all(not ep.load.called for ep in eps)
+        assert max(len(line) for line in available.splitlines()) <= 100
+        assert len(available.strip().splitlines()) <= 6
+
+
+class TestSearch:
+    def test_search_matches_names_and_descriptions(self, listed):
+        reg, _ = listed
+        assert reg.search("chart").splitlines() == [
+            "nemo.web  Inline rich output: interactive charts and images."
+        ]
+        assert reg.search("MEMORY").startswith("nemo.memory  Long-term memory")
+        # Active skills are searched too.
+        assert reg.search("fake") == "nemo.fake  A test skill with no constructor args."
+
+    def test_every_query_word_must_match(self, listed):
+        reg, _ = listed
+        assert reg.search("nemo charts").startswith("nemo.web  ")
+        assert "nemo.web" not in reg.search("charts memory")
+
+    def test_search_is_limited(self, listed):
+        reg, _ = listed
+        lines = reg.search("extra", limit=5).splitlines()
+        assert len(lines) == 6
+        assert lines[-1].startswith("… +25 more")
+
+    def test_search_explains_empty_results(self, listed):
+        reg, _ = listed
+        assert (
+            reg.search("   ") == "Give search() a word to look for, e.g. self.skills.search('web')."
+        )
+        assert reg.search("nonexistent") == "No skill matches 'nonexistent'."
+        assert "cmd.review" not in reg.search("review")
