@@ -147,3 +147,46 @@ def test_notify_callback_none_clears():
     qm.set_notify_callback(None)
     q.put("x")
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# Channel.set_on_discard
+# ---------------------------------------------------------------------------
+
+
+def test_on_discard_fires_for_items_dropped_without_a_consumer():
+    seen: list[list[str]] = []
+    q: Channel[str] = Channel("q", "queue")
+    q.set_on_discard(seen.append)
+    for item in ("a", "b", "c", "d"):
+        q.put(item)
+    assert q.pop_last() == "d"
+    q.put("e")
+    assert q.flush() == 4
+    q.put("f")
+    q.clear()
+    q.flush()  # nothing left: no call
+    assert seen == [["d"], ["a", "b", "c", "e"], ["f"]]
+
+
+def test_on_discard_fires_when_the_channel_is_removed():
+    seen: list[list[str]] = []
+    qm = QueueManager()
+    q: Channel[str] = qm.queue("q")
+    q.set_on_discard(seen.append)
+    q.put("x")
+    qm.remove_channel("q")
+    assert seen == [["x"]]
+
+
+def test_on_discard_is_not_fired_for_consumed_items_and_its_errors_are_swallowed():
+    def boom(_items: list[str]) -> None:
+        raise RuntimeError("hook failed")
+
+    q: Channel[str] = Channel("q", "queue")
+    q.put("a")
+    assert q.drain() == ["a"]
+    q.set_on_discard(boom)
+    q.put("b")
+    assert q.flush() == 1
+    assert q.qsize() == 0

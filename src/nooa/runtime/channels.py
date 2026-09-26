@@ -226,6 +226,10 @@ class Channel[T]:
         # through the same firing path so callers can rely on symmetric
         # observation.
         self._on_get: Callable[[T], None] | None = on_get
+        # Fired with the items dropped without a consumer (flush, clear,
+        # pop_last, remove_channel), so an owner tracking queued items
+        # learns they are gone. See set_on_discard().
+        self._on_discard: Callable[[list[T]], None] | None = None
         # Fired on every put() — used by QueueManager to set its
         # _notify event so race() can wake on event-mode puts.
         self._on_put: Callable[[], None] | None = on_put
@@ -408,6 +412,26 @@ class Channel[T]:
         """
         self._on_get = callback
 
+    def set_on_discard(self, callback: Callable[[list[T]], None] | None) -> None:
+        """Bind a hook fired with the pending items dropped without a consumer.
+
+        ``flush()``, ``clear()``, ``pop_last()`` and
+        ``QueueManager.remove_channel()`` call it (after the items are
+        gone) with the items they removed, head to tail; never with an
+        empty list. Items handed to a consumer (``get()``, ``drain()``,
+        ``race()``) go through ``on_get`` instead. Exceptions from the
+        hook are logged and swallowed. Pass ``None`` to clear.
+        """
+        self._on_discard = callback
+
+    def _fire_on_discard(self, items: list[T]) -> None:
+        if not items or self._on_discard is None:
+            return
+        try:
+            self._on_discard(items)
+        except Exception:
+            logger.exception("Channel(%s).on_discard raised", self.name)
+
     # ---- introspection ---------------------------------------------------
 
     def qsize(self) -> int:
@@ -434,10 +458,14 @@ class Channel[T]:
         """
         if not self._items:
             return None
-        return self._items.pop()
+        item = self._items.pop()
+        self._fire_on_discard([item])
+        return item
 
     def clear(self) -> None:
+        dropped = list(self._items)
         self._items.clear()
+        self._fire_on_discard(dropped)
 
     def flush(self) -> int:
         """Discard all pending items and cancel waiting consumers.
@@ -447,13 +475,14 @@ class Channel[T]:
         ``asyncio.CancelledError`` rather than hanging forever on a
         channel that has been flushed.
         """
-        n = self.qsize()
+        dropped = list(self._items)
         self._items.clear()
         while self._waiters:
             waiter = self._waiters.popleft()
             if not waiter.done():
                 waiter.cancel()
-        return n
+        self._fire_on_discard(dropped)
+        return len(dropped)
 
     def status(self, *, max_items: int = 3, max_chars: int = 80) -> str:
         """Pending-count summary + short preview of waiting items.
