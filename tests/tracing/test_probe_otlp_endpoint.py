@@ -160,3 +160,30 @@ class TestHttpsOnlyServers:
 
         with patch("urllib.request.urlopen", side_effect=ConnectionRefusedError()):
             assert resolve_otlp_endpoint("http://viewer:5001/v1/traces") is None
+
+
+class TestHttpsOnlyDetectionIsNarrow:
+    def test_a_400_that_merely_mentions_https_is_still_reachable(self):
+        body = b'{"error": "invalid field endpoint; see https://docs.example/otlp"}'
+        error = urllib.error.HTTPError(None, 400, "Bad Request", {}, io.BytesIO(body))
+        with patch("urllib.request.urlopen", side_effect=error):
+            assert probe_otlp_endpoint("http://collector:4318/v1/traces") is True
+
+    def test_nginx_plain_http_to_https_port_is_recognised(self):
+        body = b"<html><center>The plain HTTP request was sent to HTTPS port</center></html>"
+        error = urllib.error.HTTPError(None, 400, "Bad Request", {}, io.BytesIO(body))
+        with patch("urllib.request.urlopen", side_effect=error):
+            assert probe_otlp_endpoint("http://viewer:443/v1/traces") is False
+
+    def test_resolve_probes_once_when_nothing_is_listening(self):
+        from nooa.tracing import resolve_otlp_endpoint
+
+        calls: list[str] = []
+
+        def refused(req, timeout):
+            calls.append(req.get_full_url())
+            raise urllib.error.URLError(ConnectionRefusedError())
+
+        with patch("urllib.request.urlopen", side_effect=refused):
+            assert resolve_otlp_endpoint("http://localhost:5001/v1/traces") is None
+        assert len(calls) == 1

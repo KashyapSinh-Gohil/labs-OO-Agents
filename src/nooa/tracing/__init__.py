@@ -29,7 +29,7 @@ import sys
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from opentelemetry import trace
@@ -197,6 +197,18 @@ def probe_otlp_endpoint(endpoint: str, timeout: float | None = None) -> bool:
     Useful for external callers (e.g. the Harbor runner) that need to decide
     whether to send traces live vs. fall back to file export.
     """
+    return _probe(endpoint, timeout) == "up"
+
+
+_HTTPS_ONLY_REPLIES = (
+    "client sent an http request to an https server",  # Go net/http
+    "the plain http request was sent to https port",  # nginx
+)
+"""What servers answer (with 400) to plain HTTP on an HTTPS-only port."""
+
+
+def _probe(endpoint: str, timeout: float | None) -> Literal["up", "https_only", "down"]:
+    """Probe the viewer's health URL once: up, down, or answering "use HTTPS"."""
     if timeout is None:
         raw = os.getenv("OTLP_PROBE_TIMEOUT", "2.0")
         try:
@@ -211,24 +223,24 @@ def probe_otlp_endpoint(endpoint: str, timeout: float | None = None) -> bool:
         req = urllib.request.Request(health_url, headers=apply_viewer_auth({}), method="GET")
         with urllib.request.urlopen(req, timeout=timeout):
             pass
-        return True
+        return "up"
     except urllib.error.HTTPError as exc:
-        # A plain-HTTP request to an HTTPS-only server gets a 400 whose body
-        # says so; every export would fail the same way, so that is "not
-        # reachable at this URL". Any other error means the server is up.
-        return not _is_https_only_reply(exc)
+        # A plain-HTTP request to an HTTPS-only server gets a 400 saying so;
+        # every export would fail the same way. Any other error means the
+        # server is up.
+        return "https_only" if _is_https_only_reply(exc) else "up"
     except Exception:
-        return False
+        return "down"
 
 
 def _is_https_only_reply(exc: urllib.error.HTTPError) -> bool:
     if exc.code != 400:
         return False
     try:
-        body = exc.read(512).decode("utf-8", "replace")
+        body = exc.read(512).decode("utf-8", "replace").lower()
     except Exception:
         return False
-    return "https" in body.lower()
+    return any(reply in body for reply in _HTTPS_ONLY_REPLIES)
 
 
 def resolve_otlp_endpoint(endpoint: str, timeout: float | None = None) -> str | None:
@@ -237,12 +249,15 @@ def resolve_otlp_endpoint(endpoint: str, timeout: float | None = None) -> str | 
 
     A configured ``http://host:port`` for a viewer that serves HTTPS on that
     port is a common misconfiguration; the health probe tells the two apart.
+    The https twin is probed only when the server answered that it speaks
+    HTTPS only, so an endpoint with nothing listening costs one probe.
     """
-    if probe_otlp_endpoint(endpoint, timeout):
+    state = _probe(endpoint, timeout)
+    if state == "up":
         return endpoint
-    if endpoint.startswith("http://"):
+    if state == "https_only" and endpoint.startswith("http://"):
         upgraded = "https://" + endpoint[len("http://") :]
-        if probe_otlp_endpoint(upgraded, timeout):
+        if _probe(upgraded, timeout) == "up":
             return upgraded
     return None
 
