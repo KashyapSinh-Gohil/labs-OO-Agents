@@ -27,9 +27,12 @@ to follow semantic versioning.
     unattended turns. `handle()` accepts the new types and still accepts
     `RespondResult`.
   - The bench `TaskResult` gains an optional `report` field.
-  - `Channel.set_on_discard()` binds a hook fired with the pending items
-    that `flush()`, `clear()`, `pop_last()` and `remove_channel()` drop
-    without a consumer.
+  - A queue channel publishes two runtime events through the agent's event
+    manager: `ChannelItemConsumed` when `get()`, `drain()` or `race()` hands
+    an item to a consumer, and `ChannelItemsDiscarded` when `flush()`,
+    `clear()`, `pop_last()` or `remove_channel()` drops pending items.
+    Subscribe with `event_manager.on(...)`; they are never recorded or shown
+    to the model.
   - `nooa.strategies.codeact` names its two generation-limit messages,
     `OUTPUT_TOKENS_EXHAUSTED_MESSAGE` and `MAX_ITERATIONS_MESSAGE`, so hosts
     can map them without copying the wording.
@@ -41,9 +44,8 @@ to follow semantic versioning.
   - A session lock file records `<pid> <hostname>` and is blanked on a
     clean close, so another machine sharing the directory can tell the
     session is in use.
-  - `Channel.remove(item)` withdraws one pending item by identity without
-    firing either hook; read-only `Channel.on_get` and `Channel.on_discard`
-    return the current hooks so a caller can chain them.
+  - `Channel.remove(item)` withdraws one pending item by identity; it
+    publishes neither event.
   - `EventBase.event_role` returns an event's provider role (its `_role`
     class variable). It is not called `role` so a subclass can still
     declare a field of that name.
@@ -53,8 +55,8 @@ to follow semantic versioning.
   - `SQLiteStorageManager` takes `must_exist=True` (a missing file raises
     instead of being created empty) and `journal_mode="wal" | "delete"`
     (default `None` keeps the virtiofs detection).
-  - `nooa.storage` exports `acquire_session_lock` and `read_lock_owner`
-    (the underscore names remain as aliases).
+  - `nooa.storage` exports `read_lock_owner`, which reads a session lock
+    file's owner record.
   - `nooa.tools` exports `BashSession`, `StreamEvent` and `StreamDone`;
     `nooa.runtime.channels.ChannelReader` is the public name of the channel
     read facade (`_ChannelReader` remains as an alias).
