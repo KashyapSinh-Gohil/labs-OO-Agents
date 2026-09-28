@@ -187,6 +187,12 @@ def test_need_input_options_must_not_be_empty():
         NeedInput(question="Which branch?", options=[])
 
 
+def test_need_input_options_must_not_be_blank():
+    assert NeedInput(question="Which branch?", options=[" main "]).options == ["main"]
+    with pytest.raises(ValidationError):
+        NeedInput(question="Which branch?", options=["main", "  "])
+
+
 def _cell(code: str, call_id: str) -> LLMResponse:
     return LLMResponse(
         raw_response=None,

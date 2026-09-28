@@ -161,6 +161,11 @@ class NeedInput(BaseModel):
 
     _check_question = field_validator("question")(_non_blank)
 
+    @field_validator("options")
+    @classmethod
+    def _options_not_blank(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else [_non_blank(option) for option in value]
+
     @field_serializer("answer_type", when_used="json")
     def _serialize_answer_type(self, value: type[BaseModel] | None) -> str | None:
         """A class cannot be JSON-encoded; record it as ``module:qualname``."""
