@@ -21,11 +21,12 @@ import inspect
 import logging
 from collections import deque
 from collections.abc import AsyncGenerator, Callable, Coroutine
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import Field
 
 from nooa.context_blocks import EventBase
+from nooa.context_blocks.roles import Role
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,37 @@ class QueueOutput(EventBase):
     value_type: str
     value_preview: str
     value: Annotated[Any, Field(repr=False)] = None
+
+
+class ChannelItemConsumed(EventBase):
+    """Published when a queue-mode channel hands an item to a consumer.
+
+    ``get()``, ``drain()`` and ``QueueManager.race()`` publish it through the
+    channel's ``event_manager``, once per item. A runtime event: subscribers
+    (``event_manager.on("ChannelItemConsumed", ...)``) receive it, but it is
+    never recorded and never shown to the model.
+    """
+
+    _role: ClassVar[Role] = Role.RUNTIME_EVENT
+
+    channel: str
+    item: Annotated[Any, Field(repr=False)] = None
+
+
+class ChannelItemsDiscarded(EventBase):
+    """Published when pending items leave a queue-mode channel unconsumed.
+
+    ``flush()``, ``clear()``, ``pop_last()`` and
+    ``QueueManager.remove_channel()`` publish it once per call with the items
+    they dropped, head to tail, never with an empty list. ``remove()`` does
+    not: a withdraw is the caller's own decision. A runtime event, like
+    ``ChannelItemConsumed``.
+    """
+
+    _role: ClassVar[Role] = Role.RUNTIME_EVENT
+
+    channel: str
+    items: Annotated[list[Any], Field(repr=False)] = Field(default_factory=list)
 
 
 class StreamEnd(EventBase):
@@ -226,10 +258,6 @@ class Channel[T]:
         # through the same firing path so callers can rely on symmetric
         # observation.
         self._on_get: Callable[[T], None] | None = on_get
-        # Fired with the items dropped without a consumer (flush, clear,
-        # pop_last, remove_channel), so an owner tracking queued items
-        # learns they are gone. See set_on_discard().
-        self._on_discard: Callable[[list[T]], None] | None = None
         # Fired on every put() — used by QueueManager to set its
         # _notify event so race() can wake on event-mode puts.
         self._on_put: Callable[[], None] | None = on_put
@@ -372,12 +400,25 @@ class Channel[T]:
         the item is lost. The hook is fire-and-forget UI bookkeeping
         and must never affect item delivery.
         """
-        if self._on_get is None:
+        if self._on_get is not None:
+            try:
+                self._on_get(item)
+            except BaseException:
+                logger.exception("Channel(%s).on_get raised", self.name)
+        self._publish(ChannelItemConsumed(channel=self.name, item=item))
+
+    def _publish(self, event: EventBase) -> None:
+        """Deliver a runtime event to the ``event_manager``'s subscribers, if any.
+
+        Never raises: the item has already left the deque, so a failure here
+        must not affect delivery.
+        """
+        if self._event_manager is None:
             return
         try:
-            self._on_get(item)
+            self._event_manager.add(event, record=False)
         except BaseException:
-            logger.exception("Channel(%s).on_get raised", self.name)
+            logger.exception("Channel(%s) could not publish %s", self.name, event.event_type)
 
     def drain(self) -> list[T]:
         """Pop every buffered item now, firing ``on_get`` for each.
@@ -412,42 +453,9 @@ class Channel[T]:
         """
         self._on_get = callback
 
-    def set_on_discard(self, callback: Callable[[list[T]], None] | None) -> None:
-        """Bind a hook fired with the pending items dropped without a consumer.
-
-        ``flush()``, ``clear()``, ``pop_last()`` and
-        ``QueueManager.remove_channel()`` call it (after the items are
-        gone) with the items they removed, head to tail; never with an
-        empty list. Items handed to a consumer (``get()``, ``drain()``,
-        ``race()``) go through ``on_get`` instead. Exceptions from the
-        hook are logged and swallowed. Pass ``None`` to clear.
-        """
-        self._on_discard = callback
-
-    @property
-    def on_get(self) -> Callable[[T], None] | None:
-        """The current ``on_get`` hook, or ``None``.
-
-        Read-only: bind with ``set_on_get()``. A caller that adds its own
-        hook reads this first and calls it from the new one to keep both.
-        """
-        return self._on_get
-
-    @property
-    def on_discard(self) -> Callable[[list[T]], None] | None:
-        """The current ``on_discard`` hook, or ``None``.
-
-        Read-only: bind with ``set_on_discard()``; chain as for ``on_get``.
-        """
-        return self._on_discard
-
     def _fire_on_discard(self, items: list[T]) -> None:
-        if not items or self._on_discard is None:
-            return
-        try:
-            self._on_discard(items)
-        except Exception:
-            logger.exception("Channel(%s).on_discard raised", self.name)
+        if items:
+            self._publish(ChannelItemsDiscarded(channel=self.name, items=list(items)))
 
     # ---- introspection ---------------------------------------------------
 
@@ -487,10 +495,11 @@ class Channel[T]:
         ``False`` if ``item`` is not pending (always ``False`` in event
         mode).
 
-        Neither hook fires: the item was not consumed, so ``on_get`` does
-        not apply, and a withdraw is the caller's own decision rather than
-        a drop it needs to be told about, so ``on_discard`` does not fire
-        either. A caller tracking queued items updates its own record.
+        Nothing fires or is published: the item was not consumed, so
+        ``on_get`` and ``ChannelItemConsumed`` do not apply, and a withdraw
+        is the caller's own decision rather than a drop it needs to be told
+        about, so ``ChannelItemsDiscarded`` is not published either. A caller
+        tracking queued items updates its own record.
         """
         for position, queued in enumerate(self._items):
             if queued is item:
@@ -751,7 +760,13 @@ class QueueManager:
             if not replace:
                 raise ValueError(f"channel {name!r} already registered")
             self.remove_channel(name)
-        ch: Channel[T] = Channel(name, "queue", on_get=on_get, on_put=self._set_notify)
+        ch: Channel[T] = Channel(
+            name,
+            "queue",
+            event_manager=self._event_manager,
+            on_get=on_get,
+            on_put=self._set_notify,
+        )
         self._channels[name] = ch
         return ch
 
