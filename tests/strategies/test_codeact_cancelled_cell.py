@@ -163,3 +163,60 @@ async def test_cancel_during_prefill_cell_records_cancelled_output():
     # Tagged like a completed prefill output, so counts that skip prefill skip it too.
     assert output.metadata["prefill"] is True
     assert output.metadata["prefill_type"] == calls[0].metadata["prefill_type"]
+
+
+_OUTER_CELL = """\
+print("outer before the nested call")
+await self.inner()
+"""
+
+_INNER_CELL = """\
+print("inner partial")
+CELL_STARTED.set()
+await CELL_BLOCKER.wait()
+"""
+
+
+class Nesting(Agent, llm=FakeLLMClient()):
+    @strategy(CodeActStrategy())
+    async def work(self) -> str:
+        """Do the work."""
+        ...
+
+    @strategy(CodeActStrategy())
+    async def inner(self) -> str:
+        """Do the inner work."""
+        ...
+
+
+@pytest.mark.asyncio
+async def test_nested_cancel_records_each_cell_with_its_own_output():
+    """A cancel through a nested CodeAct call records both cells, each with its own output.
+
+    The same CancelledError passes through both cells. The inner cell's
+    recorder takes the output attached for it, so the outer cell's capture
+    attaches its own on the way out instead of the inner one being reused.
+    """
+    global CELL_STARTED, CELL_BLOCKER
+    CELL_STARTED = asyncio.Event()
+    CELL_BLOCKER = asyncio.Event()
+    agent = Nesting(
+        llm=FakeLLMClient(
+            [_cell_response(_OUTER_CELL, "call_outer"), _cell_response(_INNER_CELL, "call_inner")]
+        )
+    )
+
+    task = asyncio.create_task(agent.work())
+    await asyncio.wait_for(CELL_STARTED.wait(), timeout=10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    outputs = {
+        e.tool_call_id: e for e in agent.event_manager.values() if isinstance(e, PythonOutput)
+    }
+    assert set(outputs) == {"call_outer", "call_inner"}
+    assert all(o.execution_status is ResultStatus.CANCELLED for o in outputs.values())
+    assert "inner partial" in outputs["call_inner"].stdout
+    assert "outer before the nested call" in outputs["call_outer"].stdout
+    assert "inner partial" not in outputs["call_outer"].stdout

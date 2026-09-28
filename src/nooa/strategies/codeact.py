@@ -1814,8 +1814,14 @@ Standard Python builtins and agent instance (`self`) are available."""
         prefixes). ``metadata`` is the tag the cell's normal ``PythonOutput``
         would carry (the prefill tag for a prefill step). ``_execute_code``
         calls this and re-raises the cancellation.
+
+        The attached output is taken, not just read. The same exception passes
+        through every enclosing cell of a nested call; clearing it lets the
+        enclosing ``execute_code`` attach that cell's own output on the way out.
         """
         partial = getattr(cancel, "execution_result", None)
+        if partial is not None:
+            cancel.execution_result = None  # type: ignore[attr-defined]
         runtime.event_manager.add(
             PythonOutput(
                 tool_call_id=tool_call_id,
