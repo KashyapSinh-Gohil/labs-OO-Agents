@@ -85,8 +85,7 @@ _EXECUTE_PYTHON_RECEIPT = "status: accepted"
 
 OUTPUT_TOKENS_EXHAUSTED_MESSAGE = (
     "The model used all available output tokens before completing a tool call. "
-    "Increase `max_tokens` (16384 or more is often needed for reasoning models "
-    "such as GPT-5.5 and o-series)."
+    "Increase `max_tokens` (16384 or more is often needed for reasoning models)."
 )
 """The ``GenerationError`` message when a response stops at its output-token limit."""
 
