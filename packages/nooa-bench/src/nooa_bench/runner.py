@@ -84,10 +84,7 @@ def _setup_tracing(model: str, agent_type: str) -> None:
     For Docker containers set ``OTLP_ENDPOINT=http://host.docker.internal:5001``.
     """
     try:
-        from nooa.tracing import (
-            enable_tracing,
-            probe_otlp_endpoint,
-        )
+        import nooa.tracing
         from nooa.tracing import exporters as nemo_exporters
     except ImportError:
         logger.warning("nooa.tracing not available, no tracing")
@@ -98,13 +95,16 @@ def _setup_tracing(model: str, agent_type: str) -> None:
     TRACES_DIR.mkdir(parents=True, exist_ok=True)
     exporters = [nemo_exporters.jsonl(TRACES_DIR)]
 
-    if probe_otlp_endpoint(endpoint):
-        exporters.append(nemo_exporters.journal(endpoint=endpoint))
-        logger.info("OTLP endpoint reachable (%s) — also streaming live", endpoint)
+    # The same resolution as nooa.tracing's own set-up, including the upgrade
+    # of an http:// endpoint whose server only speaks HTTPS.
+    resolved = nooa.tracing.resolve_otlp_endpoint(endpoint)
+    if resolved is not None:
+        exporters.append(nemo_exporters.journal(endpoint=resolved))
+        logger.info("OTLP endpoint reachable (%s) — also streaming live", resolved)
     else:
         logger.info("OTLP endpoint unreachable (%s) — writing files only", endpoint)
 
-    enable_tracing(
+    nooa.tracing.enable_tracing(
         exporters=exporters,
         extra_resource_attrs={"eval.model": model, "eval.agent_type": agent_type},
     )
