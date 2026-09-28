@@ -491,6 +491,25 @@ def test_json_safe_skips_the_probe_for_plain_json_values(monkeypatch, value):
     assert events._json_safe(value) is value
 
 
+def test_plain_json_walk_refuses_a_large_container_before_queueing_it():
+    """A container larger than the remaining budget is refused without queueing its children."""
+    import tracemalloc
+
+    import nooa.events as events
+
+    big = list(range(events._PLAIN_JSON_MAX_ITEMS * 100))
+    wide = dict.fromkeys(map(str, range(events._PLAIN_JSON_MAX_ITEMS * 10)), 0)
+    tracemalloc.start()
+    try:
+        assert events._is_plain_json(big) is False
+        assert events._is_plain_json({"k": big}) is False
+        assert events._is_plain_json(wide) is False
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 1_000_000  # queueing a million children would take tens of megabytes
+
+
 def test_json_safe_still_probes_other_values(monkeypatch):
     """Anything else is still probed: native types pass, unencodable ones fall back."""
     import asyncio

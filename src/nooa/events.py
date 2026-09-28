@@ -173,14 +173,17 @@ def _is_plain_json(value: Any) -> bool:
         kind = type(item)
         if item is None or kind in _PLAIN_JSON_SCALARS:
             continue
+        if kind is not dict and kind is not list and kind is not tuple:
+            return False
+        # Refuse before queueing, so a huge container costs nothing to reject.
+        if len(stack) + len(item) > budget:
+            return False
         if kind is dict:
             if any(type(key) is not str for key in item):
                 return False
             stack.extend((child, depth + 1) for child in item.values())
-        elif kind is list or kind is tuple:
-            stack.extend((child, depth + 1) for child in item)
         else:
-            return False
+            stack.extend((child, depth + 1) for child in item)
     return True
 
 
