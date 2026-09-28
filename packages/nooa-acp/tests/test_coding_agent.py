@@ -10,7 +10,7 @@ from nooa_cli.coding import CodingAgent
 
 from nooa.context_blocks.events import ToolCallEvent
 from nooa.events import PythonOutput
-from nooa.interactive import AgentMessage, Done, RespondReason, RespondResult, Waiting
+from nooa.interactive import AgentMessage, Done, NeedInput, RespondReason, RespondResult, Waiting
 from nooa.unifiedllm import FakeLLMClient, LLMResponse
 
 
@@ -162,7 +162,11 @@ class _TypedResultAgent(CodingAgent):
         self.handle_calls += 1
         if self.handle_calls == 1:
             self.queue_manager.get_channel("system_messages").put("job finished")
-            return Waiting(explanation="waiting for job", on=["system_messages"])
+            return Waiting(
+                explanation="waiting for job",
+                message="Waiting for the job.",
+                on=["system_messages"],
+            )
         return Done(message="All done.", explanation="job finished")
 
 
@@ -174,4 +178,35 @@ async def test_dispatcher_accepts_the_typed_turn_results(tmp_path):
 
     assert result == Done(message="All done.", explanation="job finished")
     assert agent.handle_calls == 2
+    await dispatcher.close()
+
+
+def _agent_messages(agent: CodingAgent) -> list[str]:
+    return [e.content for e in agent.event_manager.values() if isinstance(e, AgentMessage)]
+
+
+async def test_dispatcher_shows_the_messages_of_typed_turn_results(tmp_path):
+    """Done.message and Waiting.message reach the person as agent messages."""
+    agent = _TypedResultAgent(llm=FakeLLMClient(), cwd=tmp_path)
+    dispatcher = InteractiveSessionDispatcher(agent)
+
+    await dispatcher.submit("wait for the job")
+
+    assert _agent_messages(agent) == ["Waiting for the job.", "All done."]
+    await dispatcher.close()
+
+
+class _QuestionAgent(CodingAgent):
+    async def handle(self, notification: dict[str, list[Any]]) -> NeedInput:
+        return NeedInput(question="Which branch?", options=["main", "dev"])
+
+
+async def test_dispatcher_shows_a_need_input_question_with_its_choices(tmp_path):
+    agent = _QuestionAgent(llm=FakeLLMClient(), cwd=tmp_path)
+    dispatcher = InteractiveSessionDispatcher(agent)
+
+    result = await dispatcher.submit("push it")
+
+    assert isinstance(result, NeedInput)
+    assert _agent_messages(agent) == ["Which branch?\n\n- main\n- dev"]
     await dispatcher.close()
