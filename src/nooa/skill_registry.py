@@ -7,7 +7,6 @@ import importlib.util
 import inspect
 import logging
 import sys
-import textwrap
 import threading
 from dataclasses import dataclass
 from importlib.metadata import entry_points
@@ -1286,13 +1285,7 @@ class SkillRegistry(Skill):
     def status(self) -> str:
         """Render the skills context block for the LLM.
 
-        Active skills get one line each (attribute and docstring one-liner).
-        Available skills are listed by name only, as one wrapped list, with
-        the calls that activate one and search the descriptions::
-
-            Available skills (3; activate: self.skills.activate(['name']); find one: self.skills.search('query')):
-              nemo.context, nemo.events, nemo.web
-
+        Shows active tools and available-but-inactive skills with one-liners.
         Excludes cmd.* (slash commands) since the agent cannot invoke them.
         """
         lines: list[str] = []
@@ -1306,7 +1299,9 @@ class SkillRegistry(Skill):
             skill = getattr(self._agent, attr, None) if attr else None
             if skill is None:
                 continue
-            active_tools.append((name, attr, self._one_liner(name)[:65]))
+            doc_str = type(skill).__doc__ or ""
+            one_liner = doc_str.strip().split("\n")[0][:65]
+            active_tools.append((name, attr, one_liner))
 
         if active_tools:
             lines.append(
@@ -1316,80 +1311,38 @@ class SkillRegistry(Skill):
             for _name, attr, desc in active_tools:
                 lines.append(f"  self.{attr:18s} {desc}")
 
-        # Available but not activated (excluding cmd.*), names only.
-        available = [
-            name
-            for name in sorted(set(self._discovered) - self._activated)
-            if not name.startswith("cmd.")
-        ]
+        # Available but not activated (excluding cmd.*)
+        available: list[tuple[str, str]] = []  # (name, one_liner)
+        for name in sorted(set(self._discovered.keys()) - self._activated):
+            if name.startswith("cmd."):
+                continue
+            # Try to get one-liner from loaded skill or entry point
+            attr = self._attr_map.get(name, "")
+            skill = getattr(self._agent, attr, None) if attr else None
+            if skill:
+                doc_str = type(skill).__doc__ or ""
+                one_liner = doc_str.strip().split("\n")[0][:65]
+            else:
+                entry = self._discovered.get(name)
+                if entry and entry.entry_point:
+                    try:
+                        cls = entry.entry_point.load()
+                        doc_str = cls.__doc__ or ""
+                        one_liner = doc_str.strip().split("\n")[0][:65]
+                    except Exception:
+                        one_liner = ""
+                else:
+                    one_liner = ""
+            available.append((name, one_liner))
+
         if available:
             if active_tools:
                 lines.append("")
-            lines.append(
-                f"Available skills ({len(available)};"
-                " activate: self.skills.activate(['name']);"
-                " find one: self.skills.search('query')):"
-            )
-            lines.extend(
-                textwrap.wrap(
-                    ", ".join(available),
-                    width=100,
-                    initial_indent="  ",
-                    subsequent_indent="  ",
-                    break_on_hyphens=False,
-                )
-            )
+            lines.append("Available Skills (activate with self.skills.activate(['name'])):")
+            for name, desc in available:
+                lines.append(f"  {name:28s} {desc}")
 
         return "\n".join(lines)
-
-    def search(self, query: str, limit: int = 10) -> str:
-        """Find skills, active or available, by name or description.
-
-        Each word of ``query`` must appear, case-insensitively, in the skill's
-        name or the first line of its docstring. Returns one
-        ``name  one-liner`` line per match, at most ``limit`` of them::
-
-            self.skills.search("chart")
-            # nemo.web  Inline rich output — interactive charts, images, HTML, ...
-
-        Activate a match with ``self.skills.activate(['name'])``.
-        """
-        words = query.lower().split()
-        if not words:
-            return "Give search() a word to look for, e.g. self.skills.search('web')."
-        matches: list[str] = []
-        for name in sorted(self._discovered):
-            if name.startswith("cmd."):
-                continue
-            one_liner = self._one_liner(name)
-            text = f"{name} {one_liner}".lower()
-            if all(word in text for word in words):
-                matches.append(f"{name}  {one_liner}".rstrip())
-        if not matches:
-            return f"No skill matches {query.strip()!r}."
-        shown = matches[: max(limit, 0)]
-        if len(matches) > len(shown):
-            shown.append(f"… +{len(matches) - len(shown)} more; narrow the query")
-        return "\n".join(shown)
-
-    def _one_liner(self, name: str) -> str:
-        """First docstring line of a skill: the loaded object's type, else its entry point.
-
-        An entry point is imported only when the skill is not loaded.
-        """
-        attr = self._attr_map.get(name, "")
-        skill = getattr(self._agent, attr, None) if attr else None
-        if skill is not None:
-            doc_str = type(skill).__doc__ or ""
-        else:
-            entry = self._discovered.get(name)
-            if not (entry and entry.entry_point):
-                return ""
-            try:
-                doc_str = entry.entry_point.load().__doc__ or ""
-            except Exception:
-                return ""
-        return doc_str.strip().split("\n")[0]
 
     # ------------------------------------------------------------------
     # Helpers

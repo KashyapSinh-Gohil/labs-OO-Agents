@@ -36,9 +36,6 @@ to follow semantic versioning.
   - `nooa.strategies.codeact` names its two generation-limit messages,
     `OUTPUT_TOKENS_EXHAUSTED_MESSAGE` and `MAX_ITERATIONS_MESSAGE`, so hosts
     can map them without copying the wording.
-  - The `<skills>` block lists available skills as one comma-separated line
-    of names (importing nothing); `SkillRegistry.search(query)` finds skills
-    by name or one-line description.
   - `TodoManager.status()` shows at most the two newest done todos when no
     todo is active; the rest are counted.
   - A session lock file records `<pid> <hostname>` and is blanked on a
