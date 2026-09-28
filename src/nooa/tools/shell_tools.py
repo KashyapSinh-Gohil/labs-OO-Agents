@@ -314,7 +314,7 @@ class ShellTools(Skill):
 
     For shell commands and file operations:
     Always use these four methods rather than Python builtins:
-        run(command, stdin=, timeout=, cwd=)  — shell command (cd/env/cwd persist)
+        run(command, stdin=, timeout=, cwd=)  — shell command (cd/env persist)
         read(path, lines=)             — view a file/region -> Match
         replace(match_or_path, ...)    — edit at a Match anchor, or by unique string
         write_file(path, content)      — create/overwrite a file
@@ -414,7 +414,7 @@ class ShellTools(Skill):
             command: Shell command to execute.
             stdin: Text piped to stdin (no quoting needed).
             timeout: Max seconds before timeout.
-            cwd: Directory for this command only; shell cwd is unchanged.
+            cwd: Directory for this command only; the shell returns to its own.
         """
         session = await self._get_session()
         run_cmd = self._with_stdin(self._in_directory(command, cwd), stdin)
@@ -502,15 +502,23 @@ class ShellTools(Skill):
 
     @staticmethod
     def _in_directory(command: str, cwd: str | Path | None) -> str:
-        """Scope ``command`` to ``cwd`` in a subshell, so the session's directory is kept.
+        """Run ``command`` in ``cwd`` in the session's own shell, then return.
 
-        If the ``cd`` fails, the subshell exits with its status and error text and
-        the command does not run. The newline before ``)`` keeps a trailing comment
-        in ``command`` from swallowing the closing parenthesis.
+        Not a subshell, so exported variables and other shell state persist as
+        for any command; only the directory goes back to where it was. ``CDPATH``
+        is cleared for the ``cd`` so a relative ``cwd`` is the shell directory's
+        child. If the ``cd`` fails, its error text and status are the result and
+        the command does not run. The newline before ``}`` keeps a trailing
+        comment in ``command`` from swallowing the closing brace.
         """
         if cwd is None:
             return command
-        return f"(cd -- {shlex.quote(str(cwd))} || exit; {command}\n)"
+        return (
+            "__nooa_back=$PWD; "
+            f"if CDPATH= cd -- {shlex.quote(str(cwd))}; then {{ {command}\n}}; "
+            '__nooa_rc=$?; cd -- "$__nooa_back"; else __nooa_rc=$?; fi; '
+            "( exit $__nooa_rc )"
+        )
 
     @staticmethod
     def _with_stdin(command: str, stdin: str | None) -> str:

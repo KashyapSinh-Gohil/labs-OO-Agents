@@ -299,6 +299,40 @@ async def test_run_with_a_missing_cwd_fails_without_running_the_command(sh, tmp_
         await sh.close()
 
 
+async def test_run_with_cwd_keeps_environment_changes(sh, tmp_path):
+    """``cwd=`` runs in the session's own shell, not a subshell: exports persist."""
+    (tmp_path / "sub").mkdir()
+    try:
+        await sh.run("export NOOA_CWD_PROBE=kept", cwd="sub")
+        assert (await sh.run("echo $NOOA_CWD_PROBE")).stdout == "kept"
+    finally:
+        await sh.close()
+
+
+async def test_run_with_cwd_returns_the_command_status(sh, tmp_path):
+    (tmp_path / "sub").mkdir()
+    try:
+        r = await sh.run("false", cwd="sub")
+        assert r.returncode == 1
+        r = await sh.run("exit_code() { return 7; }; exit_code", cwd="sub")
+        assert r.returncode == 7
+        assert (await sh.run("pwd")).stdout == str(sh.cwd)
+    finally:
+        await sh.close()
+
+
+async def test_run_with_a_relative_cwd_ignores_cdpath(sh, tmp_path):
+    """A relative ``cwd`` is the shell directory's child, whatever CDPATH says."""
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "elsewhere" / "sub").mkdir(parents=True)
+    try:
+        await sh.run(f"export CDPATH={tmp_path / 'elsewhere'}")
+        r = await sh.run("pwd", cwd="sub")
+        assert r.stdout == str((tmp_path / "sub").resolve())
+    finally:
+        await sh.close()
+
+
 async def test_run_stream_with_cwd_runs_there(sh, tmp_path):
     (tmp_path / "sub").mkdir()
     try:
