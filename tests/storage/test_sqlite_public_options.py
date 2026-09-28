@@ -135,18 +135,14 @@ def test_journal_mode_rejects_other_values(tmp_path):
     assert not (tmp_path / "x.db").exists()
 
 
-def test_lock_helpers_are_public_and_keep_their_private_aliases(tmp_path):
+def test_read_lock_owner_is_public_and_reads_the_owner_record(tmp_path):
     import nooa.storage
-    from nooa.storage import acquire_session_lock, read_lock_owner
+    from nooa.storage import read_lock_owner
 
-    assert "acquire_session_lock" in nooa.storage.__all__
     assert "read_lock_owner" in nooa.storage.__all__
-    assert sqlite_module._acquire_session_lock is acquire_session_lock
-    assert sqlite_module._read_lock_owner is read_lock_owner
-
     lock_path = str(tmp_path / "s.lock")
     assert read_lock_owner(lock_path) == (None, None)
-    fd = acquire_session_lock(lock_path)
+    fd = sqlite_module._acquire_session_lock(lock_path)
     try:
         assert read_lock_owner(lock_path) == (os.getpid(), socket.gethostname())
     finally:

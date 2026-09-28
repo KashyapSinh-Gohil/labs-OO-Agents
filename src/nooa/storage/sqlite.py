@@ -622,7 +622,7 @@ def read_lock_owner(lock_path: str) -> tuple[int | None, str | None]:
     """The ``(pid, host)`` written by the process holding the lock; ``(None, None)`` if blank.
 
     The lock file content is ``<pid> <hostname>`` (older files: just the pid;
-    see ``acquire_session_lock``). A blank file means the owner closed
+    see ``_acquire_session_lock``). A blank file means the owner closed
     cleanly. Returns ``(None, None)`` if the file is missing, empty or not
     parseable.
     """
@@ -667,7 +667,7 @@ def _blank_lock_if_ours(lock_path: str) -> None:
         pass
 
 
-def acquire_session_lock(lock_path: str) -> int:
+def _acquire_session_lock(lock_path: str) -> int:
     """Acquire an exclusive flock on *lock_path*, returning the held fd.
 
     Raises SessionAlreadyActiveError, annotated with the recorded owner PID
@@ -711,11 +711,6 @@ def acquire_session_lock(lock_path: str) -> int:
     return fd
 
 
-# Former private names, kept for existing callers.
-_acquire_session_lock = acquire_session_lock
-_read_lock_owner = read_lock_owner
-
-
 def delete_sqlite_database(db_path: str | Path) -> bool:
     """Delete an inactive SQLite database and its WAL/SHM sidecars.
 
@@ -736,7 +731,7 @@ def delete_sqlite_database(db_path: str | Path) -> bool:
         return False
 
     lock_path = str(path.with_suffix(".lock"))
-    lock_fd = acquire_session_lock(lock_path)
+    lock_fd = _acquire_session_lock(lock_path)
     try:
         existed = path.exists()
         for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
@@ -813,7 +808,7 @@ class SQLiteStorageManager:
 
         if self._db_path != ":memory:":
             lock_path = str(Path(self._db_path).with_suffix(".lock"))
-            self._lock_fd = acquire_session_lock(lock_path)
+            self._lock_fd = _acquire_session_lock(lock_path)
 
         self._db_lock = threading.RLock()
 
