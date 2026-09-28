@@ -522,7 +522,14 @@ class ShellTools(Skill):
 
     @staticmethod
     def _with_stdin(command: str, stdin: str | None) -> str:
-        """Wrap a command so ``stdin`` is fed via a base64'd tempfile (no quoting)."""
+        """Wrap a command so ``stdin`` is fed via a base64'd tempfile (no quoting).
+
+        The command runs in a ``{ ...; }`` group, not a subshell, so ``cd``,
+        exports and other shell state persist as for any command. The
+        redirection lasts for the group only; the session then reads its own
+        commands again. The newline before ``}`` keeps a trailing comment in
+        ``command`` from swallowing the closing brace.
+        """
         if stdin is None:
             return command
         import base64
@@ -530,7 +537,7 @@ class ShellTools(Skill):
         b64 = base64.b64encode(stdin.encode()).decode()
         return (
             f"__nemo_in=$(mktemp); base64 -d <<<'{b64}' > $__nemo_in; "
-            f"({command}) < $__nemo_in; __nemo_rc=$?; rm -f $__nemo_in; "
+            f"{{ {command}\n}} < $__nemo_in; __nemo_rc=$?; rm -f $__nemo_in; "
             f"( exit $__nemo_rc )"
         )
 
