@@ -6,6 +6,8 @@ to follow semantic versioning.
 
 ## [Unreleased]
 
+- `nooa connect` offers the NVIDIA Inference Hub (`inference-api.nvidia.com`,
+  key in `NVIDIA_INFERENCE_API_KEY`) as a preset provider, after build.nvidia.com.
 - `import nooa` no longer loads the strategies, the LLM client or LiteLLM
   (about 3.3 s down to 0.3 s here). The strategy names, `LLMResponse` and
   `llm_config_chain` load on first use; `from nooa import CodeActStrategy`
