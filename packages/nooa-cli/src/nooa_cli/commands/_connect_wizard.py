@@ -547,14 +547,10 @@ def configure_metadata(state: WizardState) -> bool:
         state.candidate = {
             "id": state.editing.get("underlying_model", state.model),
             "context_length": state.editing.get("context_window"),
-            "top_provider": {
-                "max_completion_tokens": state.editing.get(
-                    "max_output_tokens",
-                    state.editing.get("provenance", {})
-                    .get("catalogue_limits", {})
-                    .get("max_completion_tokens"),
-                )
-            },
+            # Saved entries keep settings only, not the catalogue limits, and an
+            # edit does not look the model up, so its ceiling is known here only
+            # if the entry saved max_output_tokens. The saved cap is kept as is.
+            "top_provider": {"max_completion_tokens": state.editing.get("max_output_tokens")},
             "reasoning": {
                 "supported_efforts": list(state.editing.get("reasoning_levels", {})),
                 "default_effort": state.editing.get("reasoning_default"),
