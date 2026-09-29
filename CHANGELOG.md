@@ -26,8 +26,11 @@ to follow semantic versioning.
     the message.
   - `nooa.interactive` adds the `Done`, `NeedInput` and `Waiting` turn
     results and a `handle_batch()` turn method (`Done | Waiting`) for
-    unattended turns. `handle()` accepts the new types and still accepts
-    `RespondResult`.
+    unattended turns. `handle()` returns one of the three types.
+  - `RespondResult` and `RespondReason` are removed; `CodingAgent`, the ACP
+    dispatcher and the ARC-AGI-3 example use the typed results. To migrate,
+    return `Done` for `DONE`, `NeedInput` for `NEED_INPUT`, and `Waiting`
+    for `WAIT` or `GET_USER_INPUT`.
   - The bench `TaskResult` gains an optional `report` field.
   - A queue channel publishes two runtime events through the agent's event
     manager: `ChannelItemConsumed` when `get()`, `drain()` or `race()` hands

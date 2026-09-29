@@ -21,8 +21,6 @@ from nooa.interactive import (
     Done,
     InteractiveAgent,
     NeedInput,
-    RespondReason,
-    RespondResult,
     SummarizationConfig,
     Waiting,
     install_summarizer,
@@ -78,13 +76,6 @@ def test_message_records_event_and_renders(agent):
     assert events[0].content == "**hi**"
 
 
-def test_respond_result_requires_explanation():
-    result = RespondResult(kind=RespondReason.DONE, explanation="did the thing")
-    assert result.kind is RespondReason.DONE
-    with pytest.raises(ValidationError):
-        RespondResult(kind=RespondReason.DONE, explanation="   ")
-
-
 def test_turn_results_require_their_text():
     assert Done(explanation=" finished ").explanation == "finished"
     assert Waiting(explanation="job ci-42", on=["jobs:ci-42"]).on == ["jobs:ci-42"]
@@ -128,7 +119,6 @@ def test_need_input_reason_is_optional():
 @pytest.mark.parametrize(
     "build",
     [
-        lambda: RespondResult(kind=RespondReason.DONE, explanation="  "),
         lambda: Done(explanation=" "),
         lambda: Waiting(explanation="waiting", on=["jobs", " "]),
     ],
@@ -221,10 +211,6 @@ _NOTIFICATION = {"user_messages": ["hi"]}
         ('return_result(Done(explanation="finished"))', Done),
         ('return_result(NeedInput(question="Which branch?"))', NeedInput),
         ('return_result(Waiting(explanation="waiting for job ci-42", on=["jobs:ci-42"]))', Waiting),
-        (
-            'return_result(RespondResult(kind=RespondReason.DONE, explanation="finished"))',
-            RespondResult,
-        ),
     ],
 )
 async def test_handle_accepts_each_turn_result(code, expected):

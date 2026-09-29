@@ -608,7 +608,7 @@ class ChannelReader[T]:
             raise QueueReadTimeoutError(
                 f"Timed out after {timeout}s waiting for queue {self.name!r}. "
                 "Use status() or qsize() to inspect queued items, or return "
-                "WAIT/NEED_INPUT instead of blocking mid-cell. Pass "
+                "Waiting/NeedInput instead of blocking mid-cell. Pass "
                 "timeout=None only when an indefinite wait is intentional."
             ) from exc
 

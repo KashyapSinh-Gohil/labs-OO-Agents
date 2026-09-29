@@ -3100,8 +3100,8 @@ Standard Python builtins and agent instance (`self`) are available."""
                     # is routed to "kind" and the kwargs fill the rest, so
                     # return_result("respond", content="hi") is equivalent to
                     # return_result(kind="respond", content="hi"). Do NOT remove
-                    # this branch: it is relied on in production (the TUI's
-                    # RespondResult and skills-sw SKILL.md).
+                    # this branch: it is relied on in production (skills-sw
+                    # SKILL.md).
                     model_fields = getattr(call.return_type, "model_fields", {})
                     if "kind" not in model_fields:
                         raise ValueError("Cannot mix positional and keyword arguments")

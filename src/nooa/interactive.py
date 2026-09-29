@@ -12,8 +12,7 @@ queues and re-enters ``handle()`` once per notification. It provides:
   and sessions,
 * ``message()`` — send a Markdown message to the user,
 * the turn protocol: ``handle()`` returns ``Done``, ``NeedInput`` or
-  ``Waiting`` (``RespondResult`` is the older form, still accepted);
-  ``handle_batch()`` runs unattended turns and returns ``Done`` or ``Waiting``,
+  ``Waiting``; ``handle_batch()`` runs unattended turns and returns ``Done`` or ``Waiting``,
 * token-budget history summarization (``install_summarizer`` /
   ``apply_model_limits``).
 
@@ -21,7 +20,6 @@ queues and re-enters ``handle()`` once per notification. It provides:
 interactive hosts such as the TUI and ACP.
 """
 
-from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, field_serializer, field_validator, model_validator
@@ -201,71 +199,6 @@ class Waiting(BaseModel):
     @classmethod
     def _names_not_blank(cls, value: list[str]) -> list[str]:
         return [_non_blank(name) for name in value]
-
-
-class RespondReason(StrEnum):
-    """Reason/action returned by ``handle()`` at the end of a turn (older form)."""
-
-    DONE = "DONE"
-    NEED_INPUT = "NEED_INPUT"
-    WAIT = "WAIT"
-    GET_USER_INPUT = "GET_USER_INPUT"
-
-
-RespondKind = Literal["DONE", "NEED_INPUT", "WAIT", "GET_USER_INPUT"]
-
-
-class RespondResult(BaseModel):
-    """Older return value for ``handle()`` — signals what the outer loop should do next.
-
-    Still accepted by ``handle()`` so existing hosts and agents keep working;
-    new code returns ``Done``, ``NeedInput`` or ``Waiting``.
-
-    Fields:
-
-    - ``kind`` — reason/action enum:
-        * ``RespondReason.DONE`` — the current request is complete.
-        * ``RespondReason.NEED_INPUT`` — the agent asked a question or needs
-          human input before continuing the current request.
-        * ``RespondReason.WAIT`` — the agent is waiting for a background job or
-          non-user queue/event before it can continue.
-        * ``RespondReason.GET_USER_INPUT`` — legacy spelling for waiting on
-          human input; prefer ``DONE`` or ``NEED_INPUT``.
-
-      All stop reasons use the same dispatcher wake path: race every declared
-      queue/event channel and re-enter ``handle()`` with the first arrival.
-      ``kind`` records why the agent stopped; it does not choose a different
-      queue primitive.
-    - ``explanation`` — required non-empty short reason why the agent is ending this
-      turn, or what external input/background event it is waiting for. The host
-      records and renders this line, so make it concrete: name the job/queue
-      being waited on, why it matters, or what user input is needed and why.
-
-
-    Use ``self.v.<name> = value`` for state that should survive across
-    turns (snapshot-backed).
-
-    Build from within the LLM's ``execute_python`` code::
-
-        return_result(
-            RespondReason.DONE,
-            explanation="answered the request; waiting for the next user message",
-        )
-
-    The older explicit model form is still valid::
-
-        return_result(RespondResult(kind="DONE", explanation="answered the request"))
-    """
-
-    kind: RespondReason = Field(description="What the outer dispatcher should do next")
-    explanation: str = Field(
-        min_length=1,
-        description=("Required: why handle() returned, or what the dispatcher is waiting for."),
-    )
-
-    _check_explanation = field_validator("explanation")(_non_blank)
-
-    model_config = {"arbitrary_types_allowed": True}
 
 
 class AgentMessage(Metadata):
@@ -552,7 +485,7 @@ class InteractiveAgent(Agent, llm=_DEFAULT_LLM):
     async def handle(
         self,
         notification: dict[str, list],
-    ) -> Done | NeedInput | Waiting | RespondResult:
+    ) -> Done | NeedInput | Waiting:
         """Handle one interactive turn.
 
         Called once per inbound notification (or batch). Unpack
@@ -607,8 +540,6 @@ class InteractiveAgent(Agent, llm=_DEFAULT_LLM):
           a subagent::
 
               return_result(Waiting(message="Tests are running; I will report when they finish.", explanation="tests running", on=["jobs:ci-42"]))
-
-        ``RespondResult`` is the older form and is still accepted.
 
         ## Available queues
 
