@@ -256,7 +256,7 @@ def _assert_replay(body, family):
         assert calls[0]["arguments"] == ARGUMENTS
         results = [item for item in body["input"] if item.get("type") == "function_call_output"]
         assert len(results) == 1 and results[0]["call_id"] == "call_1"
-        assert "prompt_cache_breakpoint" in json.dumps(results[0])
+        assert results[0]["output"][-1]["prompt_cache_breakpoint"] == {"mode": "explicit"}
     elif family == "anthropic":
         assistant = next(item for item in body["messages"] if item["role"] == "assistant")
         assert assistant["content"][0] == {
@@ -282,6 +282,9 @@ def _assert_replay(body, family):
             "__thought__" + SECRET if family.startswith("gemini-compatible") else ""
         )
         assert call["id"] == expected_id
+        if family == "gemini-compatible":
+            # The native signature survives too, not only the one embedded in the id.
+            assert call["provider_specific_fields"] == {"thought_signature": SECRET}
         result = next(item for item in body["messages"] if item["role"] == "tool")
         assert result["tool_call_id"] == expected_id
     assert "nooa_cache_boundary" not in json.dumps(body)

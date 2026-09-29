@@ -145,7 +145,14 @@ establish cache support on a particular deployment.
 uv run --extra nemo-relay pytest tests/unifiedllm/test_cache_policy.py tests/unifiedllm/test_explicit_cache_boundary.py
 ```
 
-Live tests are opt-in and spend tokens. Configure their registry aliases for
-your deployment. Keep endpoint details, credentials guidance and measured
-results alongside that private configuration. Exact replay does not control
-how much a provider caches; compare reported usage as well as outgoing requests.
+Live tests are opt-in and spend tokens. The resume suite is
+`tests/integration/test_cache_resume_live.py`; it runs only when
+`NOOA_RUN_CACHE_RESUME_LIVE=1` is set:
+
+```sh
+NOOA_RUN_CACHE_RESUME_LIVE=1 uv run pytest -m integration -s tests/integration/test_cache_resume_live.py
+```
+
+Configure its registry aliases for your deployment. Exact replay does not
+control how much a provider caches; compare reported usage as well as outgoing
+requests.
