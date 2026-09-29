@@ -70,9 +70,7 @@ async def test_enable_atif_adds_atif_alongside_event_trajectory(monkeypatch, tmp
     monkeypatch.setattr(runner, "_import_agent_class", lambda _: FinishedAgent)
     monkeypatch.setattr("nooa.unifiedllm.get_llm_client", lambda *args, **kwargs: FakeLLMClient())
 
-    assert await runner._run(
-        "task", "model", "bench", None, enable_atif=True
-    ) == 0
+    assert await runner._run("task", "model", "bench", None, enable_atif=True) == 0
 
     trajectory = Trajectory.model_validate_json((tmp_path / "trajectory.json").read_text())
     assert trajectory.schema_version == "ATIF-v1.7"

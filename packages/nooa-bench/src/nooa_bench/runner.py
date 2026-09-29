@@ -319,9 +319,7 @@ async def _run(
         _write_result(result, model, agent_type)
         nooa_trajectory_filename = "trajectory.nooa.json" if enable_atif else "trajectory.json"
         if _write_trajectory(agent, filename=nooa_trajectory_filename):
-            _write_behavior_report(
-                model, agent_type, trajectory_filename=nooa_trajectory_filename
-            )
+            _write_behavior_report(model, agent_type, trajectory_filename=nooa_trajectory_filename)
         if enable_atif:
             logger.info("ATIF trajectory written → %s", LOGS_DIR / "trajectory.json")
         _write_answer(result)
