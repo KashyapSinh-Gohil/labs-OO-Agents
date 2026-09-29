@@ -64,6 +64,7 @@ class WizardState:
     prompt_key: Any = None
     proposal: Any = None
     provider: Any = None
+    reasoning_level: Any = None
     reasoning_output_tokens: Any = None
     reasoning_template: Any = None
     registry: Any = None

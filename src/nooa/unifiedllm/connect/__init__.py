@@ -197,6 +197,36 @@ class InterfaceResult:
             if result.entry["provenance"]["probes"]["routing"]["outcome"] == "accepted"
         )
 
+    @property
+    def reasoning_observed(self) -> dict[str, bool]:
+        """Which interfaces put a reasoning item on the wire, not merely accepted a call.
+
+        Empty (all False) unless check_interfaces was given reasoning_levels;
+        an interface can be accepted and still never surface reasoning.
+        """
+        observed: dict[str, bool] = {}
+        for style, result in self.results.items():
+            probes = result.entry["provenance"]["probes"]
+            observed[style] = any(
+                record.get("reasoning_observed")
+                for name, record in probes.items()
+                if name.startswith("level:")
+            )
+        return observed
+
+    @property
+    def recommended_style(self) -> str | None:
+        """The accepted interface to prefer: the first (by ``styles`` order) that
+        actually showed reasoning, or else the first accepted interface, or
+        None if nothing was accepted.
+        """
+        accepted = self.accepted
+        observed = self.reasoning_observed
+        for style in accepted:
+            if observed.get(style):
+                return style
+        return accepted[0] if accepted else None
+
 
 @dataclass(frozen=True)
 class ProbeUpdate:
@@ -462,10 +492,20 @@ def fuzzy_match_models(model: str, models: list[dict]) -> list[dict]:
 
 
 def reasoning_settings(template: str, style: str, level: str, *, budget: int = 4096) -> dict:
-    """Build an onboarding candidate, not a claim about a model's support."""
+    """Build an onboarding candidate, not a claim about a model's support.
+
+    Responses always asks for ``reasoning.summary`` alongside effort. Some
+    routes (OpenAI/Azure/DeepSeek observed) return summary text without being
+    asked, but others (Kimi, Qwen observed on the Hub) omit the entire
+    "reasoning" output item -- not just its text -- unless summary is
+    explicitly requested, even though usage still reports billed reasoning
+    tokens. Asking unconditionally is harmless where it's already the
+    default and is required to observe reasoning at all on routes where it
+    isn't.
+    """
     if template == "effort":
         return (
-            {"reasoning": {"effort": level}}
+            {"reasoning": {"effort": level, "summary": "auto"}}
             if style == "responses"
             else {"reasoning_effort": level}
         )
@@ -1573,6 +1613,9 @@ async def check_interfaces(
     api_key: str | None = None,
     styles: tuple[str, ...] = ("chat", "responses", "anthropic"),
     timeout_seconds: float = 30,
+    reasoning_template: str | None = None,
+    reasoning_level: str = "medium",
+    reasoning_output_tokens: int = DEFAULT_REASONING_OUTPUT_TOKENS,
 ) -> AsyncIterator[ProbeUpdate | InterfaceResult]:
     """Try one routing request per interface, sharing one budget and no retries.
 
@@ -1582,6 +1625,21 @@ async def check_interfaces(
     have different authentication conventions, so failure on one does not stop
     the other bounded attempts. Close the iterator when cancelling. The selected
     result can be passed as plan(existing_entry=...) to reuse its routing check.
+
+    ``reasoning_template``, when given, also runs one reasoning-eliciting probe
+    per interface (the same puzzle prompt ``plan`` uses for its own
+    reasoning-level checks), built per style via ``reasoning_settings`` so each
+    interface gets its own correct wire shape rather than one shape reused
+    everywhere. This makes ``InterfaceResult.reasoning_observed`` and
+    ``.recommended_style`` reflect which interfaces actually surface reasoning
+    for this model, not just which accept an ordinary call. A route can accept
+    calls on every interface while only one of them ever puts a "reasoning"
+    item on the wire -- e.g. Responses needs ``reasoning.summary`` requested
+    (see ``reasoning_settings``) for some Hub routes that Chat's plain
+    ``reasoning_content`` surfaces without any extra parameter. Only the
+    "effort" template is meaningful across chat and responses together; an
+    anthropic-only comparison needs a matching template (adaptive/budget/
+    thinking) passed explicitly.
     """
     if (
         not styles
@@ -1592,6 +1650,11 @@ async def check_interfaces(
     results = {}
     spent = 0
     for style in dict.fromkeys(styles):
+        style_reasoning_levels = (
+            {reasoning_level: reasoning_settings(reasoning_template, style, reasoning_level)}
+            if reasoning_template
+            else None
+        )
         proposal = plan(
             alias,
             model,
@@ -1600,26 +1663,41 @@ async def check_interfaces(
             api_key_env,
             budget_tokens=budget_tokens,
             output_tokens=output_tokens,
+            reasoning_levels=style_reasoning_levels,
+            reasoning_output_tokens=reasoning_output_tokens,
+        )
+        routing = replace(
+            proposal.probes[0],
+            timeout_seconds=timeout_seconds,
+            body={
+                **proposal.probes[0].body,
+                "max_output_tokens" if style == "responses" else "max_tokens": output_tokens,
+            },
+            token_estimate=output_tokens + 512,
+            uses_configured_cap=False,
+        )
+        level_probes = tuple(
+            replace(
+                p,
+                timeout_seconds=timeout_seconds,
+                body={
+                    **p.body,
+                    "max_output_tokens" if style == "responses" else "max_tokens": (
+                        reasoning_output_tokens
+                    ),
+                },
+                token_estimate=reasoning_output_tokens + 512,
+                uses_configured_cap=False,
+            )
+            for p in proposal.probes
+            if p.name.startswith("level:")
         )
         proposal = replace(
             proposal,
-            probes=(
-                replace(
-                    proposal.probes[0],
-                    timeout_seconds=timeout_seconds,
-                    body={
-                        **proposal.probes[0].body,
-                        "max_output_tokens"
-                        if style == "responses"
-                        else "max_tokens": output_tokens,
-                    },
-                    token_estimate=output_tokens + 512,
-                    uses_configured_cap=False,
-                ),
-            ),
+            probes=(routing, *level_probes),
             budget_tokens=max(0, budget_tokens - spent),
         )
-        async with aclosing(run_steps(proposal, approved="minimal", api_key=api_key)) as steps:
+        async with aclosing(run_steps(proposal, approved="all", api_key=api_key)) as steps:
             async for event in steps:
                 if isinstance(event, ConnectResult):
                     results[style] = event
