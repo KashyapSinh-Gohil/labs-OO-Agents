@@ -95,9 +95,17 @@ def test_must_exist_refuses_a_missing_file_and_creates_nothing(tmp_path):
     with pytest.raises(sqlite3.OperationalError):
         SQLiteStorageManager(path, must_exist=True)
     assert not path.exists()
+    assert not (tmp_path / "gone.lock").exists()
     # The lock was released: a normal open still works.
     with SQLiteStorageManager(path) as storage:
         storage.save_snapshot_json("{}")
+
+
+def test_must_exist_with_a_missing_directory_raises_operational_error(tmp_path):
+    missing = tmp_path / "no-such-dir"
+    with pytest.raises(sqlite3.OperationalError):
+        SQLiteStorageManager(missing / "s.db", must_exist=True)
+    assert not missing.exists()
 
 
 def test_must_exist_opens_an_existing_file(tmp_path):

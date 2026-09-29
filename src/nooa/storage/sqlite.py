@@ -764,10 +764,11 @@ class SQLiteStorageManager:
                  (useful for testing).
         check_same_thread: Passed to ``sqlite3.connect``. ``False`` lets
             other threads use the manager (see ``save_snapshot_json``).
-        must_exist: Open the file with SQLite's ``mode=rw`` URI, so a
-            missing file raises ``sqlite3.OperationalError`` instead of
-            being created empty (for example when a delete races an open).
-            Not valid with ``":memory:"``.
+        must_exist: Refuse a missing file with ``sqlite3.OperationalError``
+            instead of creating it empty, and create nothing (no lock file
+            either). The file is opened with SQLite's ``mode=rw`` URI, so a
+            delete that races the open also raises. Not valid with
+            ``":memory:"``.
         journal_mode: ``"wal"`` or ``"delete"`` to choose SQLite's journal.
             ``None`` (the default) uses the rollback journal (``"delete"``)
             on a detected virtiofs mount and WAL elsewhere. Choose
@@ -810,6 +811,10 @@ class SQLiteStorageManager:
         self._closed = False
 
         if self._db_path != ":memory:":
+            # Check before locking so a missing file (or directory) creates no
+            # stray lock file. mode=rw below still covers a delete after this.
+            if must_exist and not Path(self._db_path).exists():
+                raise sqlite3.OperationalError(f"unable to open database file: {self._db_path}")
             lock_path = str(Path(self._db_path).with_suffix(".lock"))
             self._lock_fd = _acquire_session_lock(lock_path)
 

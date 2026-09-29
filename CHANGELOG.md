@@ -57,7 +57,8 @@ to follow semantic versioning.
     serialised snapshot under the manager's own lock; with
     `check_same_thread=False` it may be called from a worker thread.
   - `SQLiteStorageManager` takes `must_exist=True` (a missing file raises
-    instead of being created empty) and `journal_mode="wal" | "delete"`
+    `sqlite3.OperationalError` and nothing is created, not even the lock
+    file) and `journal_mode="wal" | "delete"`
     (default `None` keeps the virtiofs detection).
   - `nooa.storage` exports `read_lock_owner`, which reads a session lock
     file's owner record.
