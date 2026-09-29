@@ -74,13 +74,11 @@ async def test_enable_atif_adds_atif_alongside_event_trajectory(monkeypatch, tmp
         "task", "model", "bench", None, enable_atif=True
     ) == 0
 
-    trajectory = Trajectory.model_validate_json(
-        (tmp_path / "trajectory.atif.json").read_text()
-    )
+    trajectory = Trajectory.model_validate_json((tmp_path / "trajectory.json").read_text())
     assert trajectory.schema_version == "ATIF-v1.7"
     assert trajectory.agent.name == "FinishedAgent"
     assert any("task" in str(step) for step in trajectory.steps)
-    events = json.loads((tmp_path / "trajectory.json").read_text())
+    events = json.loads((tmp_path / "trajectory.nooa.json").read_text())
     assert events
     assert (tmp_path / "behavior.json").exists()
 
@@ -129,7 +127,7 @@ async def test_cleanup_failures_preserve_the_original_outcome(
     monkeypatch.setattr(runner, "_import_agent_class", lambda name: FakeAgent)
     monkeypatch.setattr(runner, "_write_result", write_result)
     for name in ("_write_trajectory", "_write_behavior_report", "_write_answer"):
-        monkeypatch.setattr(runner, name, lambda *args: None)
+        monkeypatch.setattr(runner, name, lambda *args, **kwargs: None)
 
     if outcome.endswith("error") or outcome == "cancelled":
         with pytest.raises(type(original_error)) as caught:

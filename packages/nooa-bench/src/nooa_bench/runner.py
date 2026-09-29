@@ -164,8 +164,8 @@ def _public_json_default(value: Any) -> Any:
     return str(value)
 
 
-def _write_trajectory(agent: Any) -> bool:
-    """Dump the agent's full event history to LOGS_DIR/trajectory.json.
+def _write_trajectory(agent: Any, *, filename: str = "trajectory.json") -> bool:
+    """Dump the agent's full event history to a NOOA trajectory JSON file.
 
     The OTLP spans under ``agent/traces/`` remain the canonical record, but
     failure analysis starts in the per-task ``agent/`` directory — which
@@ -174,7 +174,7 @@ def _write_trajectory(agent: Any) -> bool:
     previously found nothing.
     """
     # Reused log directories must not label a previous task's data as this run.
-    out = LOGS_DIR / "trajectory.json"
+    out = LOGS_DIR / filename
     try:
         out.unlink(missing_ok=True)
         (LOGS_DIR / "behavior.json").unlink(missing_ok=True)
@@ -214,13 +214,15 @@ def _write_trajectory(agent: Any) -> bool:
     return True
 
 
-def _write_behavior_report(model: str, agent_type: str) -> None:
+def _write_behavior_report(
+    model: str, agent_type: str, *, trajectory_filename: str = "trajectory.json"
+) -> None:
     """Write deterministic interface-behavior metrics beside the trajectory.
 
     Behavior analysis is observability only: malformed or missing artifacts must
     never turn a completed benchmark task into a failure.
     """
-    trajectory = LOGS_DIR / "trajectory.json"
+    trajectory = LOGS_DIR / trajectory_filename
     try:
         from nooa_bench.behavior_analyzer import analyze_trajectory
 
@@ -286,11 +288,13 @@ async def _run(
         if enable_atif:
             from nooa.atif import atif_scope
 
-            trajectory_path = LOGS_DIR / "trajectory.atif.json"
+            trajectory_path = LOGS_DIR / "trajectory.json"
             try:
                 trajectory_path.unlink(missing_ok=True)
+                (LOGS_DIR / "trajectory.nooa.json").unlink(missing_ok=True)
+                (LOGS_DIR / "behavior.json").unlink(missing_ok=True)
             except OSError as e:
-                logger.warning("Could not invalidate old ATIF trajectory: %s", e)
+                logger.warning("Could not invalidate old trajectory artifacts: %s", e)
 
         # All agents share the same interface: {"user_message": instruction}.
         # Benchmark-specific parsing (system prompts, data paths, etc.) happens
@@ -305,7 +309,7 @@ async def _run(
         if enable_atif:
             async with atif_scope(
                 agent,
-                path=LOGS_DIR / "trajectory.atif.json",
+                path=LOGS_DIR / "trajectory.json",
                 agent_model_name=model,
             ):
                 result = await agent._run_evaluation(task_input)
@@ -313,10 +317,13 @@ async def _run(
             result = await agent._run_evaluation(task_input)
         result.update(get_task_tokens())
         _write_result(result, model, agent_type)
-        if _write_trajectory(agent):
-            _write_behavior_report(model, agent_type)
+        nooa_trajectory_filename = "trajectory.nooa.json" if enable_atif else "trajectory.json"
+        if _write_trajectory(agent, filename=nooa_trajectory_filename):
+            _write_behavior_report(
+                model, agent_type, trajectory_filename=nooa_trajectory_filename
+            )
         if enable_atif:
-            logger.info("ATIF trajectory written → %s", LOGS_DIR / "trajectory.atif.json")
+            logger.info("ATIF trajectory written → %s", LOGS_DIR / "trajectory.json")
         _write_answer(result)
 
         if result.get("success"):
