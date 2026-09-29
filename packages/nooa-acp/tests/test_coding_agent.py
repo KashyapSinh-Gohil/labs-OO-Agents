@@ -7,6 +7,7 @@ from typing import Any
 
 from nooa_acp.dispatcher import InteractiveSessionDispatcher
 from nooa_cli.coding import CodingAgent
+from pydantic import BaseModel, Field
 
 from nooa.context_blocks.events import ToolCallEvent
 from nooa.events import PythonOutput
@@ -209,4 +210,35 @@ async def test_dispatcher_shows_a_need_input_question_with_its_choices(tmp_path)
 
     assert isinstance(result, NeedInput)
     assert _agent_messages(agent) == ["Which branch?\n\n- main\n- dev"]
+    await dispatcher.close()
+
+
+class _Release(BaseModel):
+    version: str = Field(description="The version number")
+    notes: list[str]
+
+
+class _TypedQuestionAgent(CodingAgent):
+    async def handle(self, notification: dict[str, list[Any]]) -> NeedInput:
+        return NeedInput(
+            question="Which release?",
+            reason="The version decides the changelog heading.",
+            answer_type=_Release,
+        )
+
+
+async def test_dispatcher_shows_a_need_input_reason_and_answer_fields(tmp_path):
+    """The reason and the answer_type fields reach the person, who answers as text."""
+    agent = _TypedQuestionAgent(llm=FakeLLMClient(), cwd=tmp_path)
+    dispatcher = InteractiveSessionDispatcher(agent)
+
+    await dispatcher.submit("release it")
+
+    assert _agent_messages(agent) == [
+        "Which release?\n\n"
+        "The version decides the changelog heading.\n\n"
+        "Reply with these fields:\n"
+        "- version (str): The version number\n"
+        "- notes (list[str])"
+    ]
     await dispatcher.close()
