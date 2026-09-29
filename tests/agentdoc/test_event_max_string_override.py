@@ -67,14 +67,18 @@ class TestEventMaxStringOverride:
 
     def test_notification_description_not_truncated_up_to_its_own_cap(self):
         """Notification.description carries steering text — uncut up to its 20,000-char cap."""
-        event = Notification(source="steer:user", description=LONG_STRING)
+        event = Notification(
+            source="New message from the user while you were working.", description=LONG_STRING
+        )
         rendered = pformat(event, max_string=MAX_STRING)
         assert LONG_STRING in rendered
 
     def test_notification_description_truncated_past_its_own_cap(self):
         """Past 20,000 chars, description is bounded rather than rendering an unbounded payload."""
         text = "x" * 20_001
-        event = Notification(source="steer:user", description=text)
+        event = Notification(
+            source="New message from the user while you were working.", description=text
+        )
         rendered = pformat(event, max_string=MAX_STRING)
         assert text not in rendered
         assert "str(len=20001" in rendered
@@ -86,7 +90,9 @@ class TestEventMaxStringOverride:
         which is what truncated the description before it had its own spec.
         """
         text = "s" * length
-        event = Notification(source="steer:user", description=text)
+        event = Notification(
+            source="New message from the user while you were working.", description=text
+        )
         rendered = XMLBlockFormatter().format_event(event, TruncationConfig().event_format)
         assert text in rendered
         assert "str(len=" not in rendered
@@ -94,7 +100,9 @@ class TestEventMaxStringOverride:
     def test_notification_description_truncated_through_event_formatter_past_its_cap(self):
         """A steer past the 20,000-char cap is bounded, not rendered in full."""
         text = "s" * 20_001
-        event = Notification(source="steer:user", description=text)
+        event = Notification(
+            source="New message from the user while you were working.", description=text
+        )
         rendered = XMLBlockFormatter().format_event(event, TruncationConfig().event_format)
         assert text not in rendered
         assert "str(len=20001" in rendered
@@ -123,7 +131,9 @@ class TestNotificationValue:
 
         payload = {"kind": "review-request", "files": ["a.py", "b.py"]}
         event = Notification(
-            source="steer:parent:reviewer", description="Review these files", value=payload
+            source="New message from your parent agent reviewer while you were working.",
+            description="Review these files",
+            value=payload,
         )
         rendered = pformat(event)
         assert "Review these files" in rendered
@@ -131,7 +141,12 @@ class TestNotificationValue:
         assert event.value is payload
 
     def test_value_defaults_to_none(self):
-        assert Notification(source="steer:user", description="hi").value is None
+        assert (
+            Notification(
+                source="New message from the user while you were working.", description="hi"
+            ).value
+            is None
+        )
 
     def test_value_persists_when_not_json_encodable(self):
         """The SQLite store calls model_dump_json(); an arbitrary object must not raise."""
@@ -140,7 +155,11 @@ class TestNotificationValue:
             def __repr__(self) -> str:
                 return "Opaque<42>"
 
-        event = Notification(source="steer:user", description="carry this", value=Opaque())
+        event = Notification(
+            source="New message from the user while you were working.",
+            description="carry this",
+            value=Opaque(),
+        )
         dumped = event.model_dump_json()
         assert "Opaque<42>" in dumped
         assert event.value.__class__ is Opaque  # the live object is untouched

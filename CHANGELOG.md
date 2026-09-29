@@ -20,8 +20,10 @@ to follow semantic versioning.
     `ExecutionResult` (new `cancelled` flag) to the re-raised
     `CancelledError` as `execution_result`. The ACP bridge still shows
     the cell as "Cancelled".
-  - `Notification.description` renders in full; session hosts will use
-    `source="steer:<who>"` for steering text.
+  - `Notification.description` renders in full (up to 20,000 characters)
+    and `Notification.value` carries an optional object. Session hosts use
+    it for steering text, with a `source` that says in plain words who sent
+    the message.
   - `nooa.interactive` adds the `Done`, `NeedInput` and `Waiting` turn
     results and a `handle_batch()` turn method (`Done | Waiting`) for
     unattended turns. `handle()` accepts the new types and still accepts

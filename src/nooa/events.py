@@ -492,10 +492,11 @@ class Notification(EventBase):  # type: ignore[misc]
 
     Session hosts use this event for steering: a message a person or
     parent sends while a turn is running is appended as a ``Notification``
-    with ``source="steer:<who>"`` (for example ``"steer:user"`` or
-    ``"steer:parent:<name>"``), the text as ``description`` and, when the
-    sender passed an object rather than text, that object as ``value``, so
-    the model sees it at its next call.
+    whose ``source`` says in plain words who sent it (for example "New
+    message from the user while you were working."), with the text as
+    ``description`` and, when the sender passed an object rather than
+    text, that object as ``value``, so the model sees it at its next call.
+    The model reads ``source``, so it is a sentence, not an identifier.
     """
 
     _role: ClassVar[Role] = Role.USER
