@@ -101,13 +101,7 @@ class EventBase(BaseModel):
 
     @property
     def event_role(self) -> Role:
-        """The provider role this event type renders as (its ``_role`` class variable).
-
-        Read-only; subclasses set it by overriding ``_role``. Named
-        ``event_role`` rather than ``role`` so a subclass may still declare a
-        field called ``role``: a base-class property of that name would
-        silently take precedence over the field.
-        """
+        """The provider role this event renders as (the ``_role`` class variable)."""
         return type(self)._role
 
     @property
