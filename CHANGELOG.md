@@ -70,8 +70,9 @@ to follow semantic versioning.
     in fresh asyncio or thread contexts.
 - Tracing: a plain-HTTP `OTLP_ENDPOINT` for a viewer that serves HTTPS on
   that port no longer counts as reachable. The probe recognises the 400
-  "HTTP request to an HTTPS server" reply, and the default exporter set-up
-  retries the https twin and uses it, with one line on stderr saying so.
+  "HTTP request to an HTTPS server" reply, and `resolve_otlp_endpoint`
+  (used by the default exporter set-up and the bench runner) retries the
+  https twin and uses it, logging one warning that names both endpoints.
   Before, tracing turned on and every export was dropped.
 - Connect no longer writes its session history into `llm_config.yaml`. Saved
   aliases now contain only the discovered runtime settings; the whole

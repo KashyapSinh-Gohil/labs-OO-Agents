@@ -24,6 +24,7 @@ Usage::
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import sys
 import urllib.error
@@ -55,6 +56,8 @@ from nooa.tracing._otlp_file_exporter import OtlpJsonFileExporter
 from nooa.tracing._otlp_http_exporter import OtlpJsonHttpExporter
 from nooa.tracing._session import get_session, session_scope, set_session
 from nooa.tracing._session_processor import SessionSpanProcessor
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Module-level state
@@ -250,7 +253,9 @@ def resolve_otlp_endpoint(endpoint: str, timeout: float | None = None) -> str | 
     A configured ``http://host:port`` for a viewer that serves HTTPS on that
     port is a common misconfiguration; the health probe tells the two apart.
     The https twin is probed only when the server answered that it speaks
-    HTTPS only, so an endpoint with nothing listening costs one probe.
+    HTTPS only, so an endpoint with nothing listening costs one probe. The
+    upgrade is logged as one warning naming the configured ``http://``
+    endpoint and the ``https://`` endpoint used instead.
     """
     state = _probe(endpoint, timeout)
     if state == "up":
@@ -258,6 +263,11 @@ def resolve_otlp_endpoint(endpoint: str, timeout: float | None = None) -> str | 
     if state == "https_only" and endpoint.startswith("http://"):
         upgraded = "https://" + endpoint[len("http://") :]
         if _probe(upgraded, timeout) == "up":
+            logger.warning(
+                "OTLP endpoint %s answers only over HTTPS; exporting to %s instead.",
+                endpoint,
+                upgraded,
+            )
             return upgraded
     return None
 
@@ -488,11 +498,6 @@ def _default_exporters() -> list[SpanExporter] | None:
 
     resolved = resolve_otlp_endpoint(endpoint)
     if resolved is not None:
-        if resolved != endpoint:
-            print(
-                f"OTLP_ENDPOINT ({endpoint}) answers only over HTTPS; exporting to {resolved}.",
-                file=sys.stderr,
-            )
         return [exporters_mod.journal(endpoint=resolved)]
 
     _probe_failed = True

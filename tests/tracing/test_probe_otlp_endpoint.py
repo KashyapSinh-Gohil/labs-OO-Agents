@@ -127,7 +127,7 @@ class TestHttpsOnlyServers:
         with patch("urllib.request.urlopen", side_effect=error):
             assert probe_otlp_endpoint("http://viewer:5443/v1/traces") is True
 
-    def test_resolve_upgrades_to_https_when_only_that_answers(self):
+    def test_resolve_upgrades_to_https_when_only_that_answers(self, caplog):
         from nooa.tracing import resolve_otlp_endpoint
 
         def fake_urlopen(req, timeout):
@@ -139,10 +139,15 @@ class TestHttpsOnlyServers:
             return mock
 
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-            assert (
-                resolve_otlp_endpoint("http://viewer:5443/v1/traces")
-                == "https://viewer:5443/v1/traces"
-            )
+            with caplog.at_level("WARNING", logger="nooa.tracing"):
+                assert (
+                    resolve_otlp_endpoint("http://viewer:5443/v1/traces")
+                    == "https://viewer:5443/v1/traces"
+                )
+        # The upgrade is not silent: one line names both endpoints.
+        [record] = [r for r in caplog.records if r.name == "nooa.tracing"]
+        assert "http://viewer:5443/v1/traces" in record.getMessage()
+        assert "https://viewer:5443/v1/traces" in record.getMessage()
 
     def test_resolve_keeps_a_working_http_endpoint(self):
         from nooa.tracing import resolve_otlp_endpoint
