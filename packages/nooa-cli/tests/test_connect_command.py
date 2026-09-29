@@ -1186,9 +1186,10 @@ def test_default_budget_covers_explicit_small_cap_and_every_level(tmp_path, monk
         input="y\ny\n",
     )
     assert result.exit_code == 0, result.output
-    assert [
-        body["reasoning_effort"] for body in bodies if "reasoning_effort" in body
-    ] == [levels.split(",")[0], *levels.split(",")]
+    assert [body["reasoning_effort"] for body in bodies if "reasoning_effort" in body] == [
+        levels.split(",")[0],
+        *levels.split(","),
+    ]
     # Two interfaces reach HTTP; the runtime rejects the third before sending.
     # check_interfaces also probes the first level (max) per interface, cheaply,
     # to recommend which interface actually surfaces reasoning. Routing is then

@@ -31,9 +31,7 @@ class TestResponsesClientProjection:
         ]
         result = _project_rendered(messages)
 
-        assert result == [
-            {"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}
-        ]
+        assert result == [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}]
 
     def test_system_message_preserved_in_list(self):
         """System messages stay in the list for downstream budget clamping."""
@@ -158,9 +156,7 @@ class TestResponsesClientProjection:
         ]
         result = _project_rendered(messages)
 
-        assert result == [
-            {"role": "user", "content": [{"type": "input_text", "text": "visible"}]}
-        ]
+        assert result == [{"role": "user", "content": [{"type": "input_text", "text": "visible"}]}]
 
 
 class TestResponsesClientTransformMessages:
@@ -239,9 +235,7 @@ class TestResponsesClientTransformMessages:
         input_msgs, instructions = client._transform_messages(messages)
 
         assert instructions == "Part 1\n\nPart 2"
-        assert input_msgs == [
-            {"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}
-        ]
+        assert input_msgs == [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}]
 
     def test_no_system_messages_returns_none(self, client):
         """No system messages → instructions is None."""
@@ -249,6 +243,4 @@ class TestResponsesClientTransformMessages:
         input_msgs, instructions = client._transform_messages(messages)
 
         assert instructions is None
-        assert input_msgs == [
-            {"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}
-        ]
+        assert input_msgs == [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}]
