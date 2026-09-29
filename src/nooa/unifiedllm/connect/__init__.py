@@ -136,6 +136,12 @@ PROVIDERS = {
     "nvidia": ProviderPreset(
         "NVIDIA (build.nvidia.com)", "https://integrate.api.nvidia.com/v1", "chat", "NVIDIA_API_KEY"
     ),
+    "hub": ProviderPreset(
+        "NVIDIA Inference Hub (inference-api.nvidia.com)",
+        "https://inference-api.nvidia.com/v1",
+        "chat",
+        "NVIDIA_INFERENCE_API_KEY",
+    ),
     "openai": ProviderPreset("OpenAI", "https://api.openai.com/v1", "responses", "OPENAI_API_KEY"),
     "anthropic": ProviderPreset(
         "Anthropic", "https://api.anthropic.com/v1", "anthropic", "ANTHROPIC_API_KEY"
