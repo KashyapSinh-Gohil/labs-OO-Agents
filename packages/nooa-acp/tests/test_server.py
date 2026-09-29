@@ -33,6 +33,7 @@ from nooa.errors import GenerationError
 from nooa.interactive import Done
 from nooa.skill import Skill, slash_command
 from nooa.slash_dispatch import SlashCommandResult
+from nooa.strategies.codeact import MAX_ITERATIONS_MESSAGE, OUTPUT_TOKENS_EXHAUSTED_MESSAGE
 from nooa.unifiedllm import FakeLLMClient
 
 
@@ -1267,13 +1268,14 @@ async def test_adapter_skips_duplicate_mcp_names_without_failing_startup(tmp_pat
 @pytest.mark.parametrize(
     ("message", "stop_reason"),
     [
+        (OUTPUT_TOKENS_EXHAUSTED_MESSAGE, "max_tokens"),
         (
-            "Empty response: the model used all available output tokens on reasoning; "
-            "increase `max_tokens`.",
-            "max_tokens",
+            MAX_ITERATIONS_MESSAGE.format(iterations=10, max_iterations=10, method="work"),
+            "max_turn_requests",
         ),
         (
-            "Generation failed after 10 iterations (max_iterations=10).",
+            "Generation failed after 3 errors (max_retries=3). "
+            "Unable to generate valid code for `work`.",
             "max_turn_requests",
         ),
     ],
@@ -1506,7 +1508,7 @@ async def test_slash_command_still_reports_generation_limits(tmp_path):
     created = await adapter.new_session(str(tmp_path))
     session = await _session(adapter, created.session_id)
 
-    boom = GenerationError("Empty response: the model used all available output tokens")
+    boom = GenerationError(OUTPUT_TOKENS_EXHAUSTED_MESSAGE)
     with (
         # The session has no workspace commands, so force the slash branch.
         patch.object(CodingACPAdapter, "_slash_invocation", return_value=("anything", "now")),
@@ -1535,7 +1537,7 @@ async def test_a_turn_that_ends_early_closes_its_open_tool_cards(tmp_path):
         session.agent.event_manager.add(
             ToolCallEvent(tool_call_id="stale", name="execute_python", arguments={"code": "x"})
         )
-        raise GenerationError("Empty response: the model used all available output tokens")
+        raise GenerationError(OUTPUT_TOKENS_EXHAUSTED_MESSAGE)
 
     with patch.object(session.dispatcher, "submit", side_effect=open_a_card_then_fail):
         await adapter.prompt(created.session_id, [text_block("do the work")])
