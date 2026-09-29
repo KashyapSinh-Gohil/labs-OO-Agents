@@ -260,6 +260,7 @@ async def _run(
     agent_type: str,
     api_base: str | None,
     working_dir: str | None = None,
+    enable_atif: bool = False,
 ) -> int:
     """Async main: instantiate, wire, run.  Returns exit code (0 = success)."""
     from nooa.unifiedllm import get_llm_client
@@ -282,6 +283,15 @@ async def _run(
         AgentClass = _import_agent_class(agent_type)
         agent = AgentClass(llm=llm_client)
 
+        if enable_atif:
+            from nooa.atif import atif_scope
+
+            trajectory_path = LOGS_DIR / "trajectory.atif.json"
+            try:
+                trajectory_path.unlink(missing_ok=True)
+            except OSError as e:
+                logger.warning("Could not invalidate old ATIF trajectory: %s", e)
+
         # All agents share the same interface: {"user_message": instruction}.
         # Benchmark-specific parsing (system prompts, data paths, etc.) happens
         # inside the agent's _run_evaluation method.
@@ -292,11 +302,21 @@ async def _run(
         task_input: dict[str, Any] = {"user_message": instruction}
         if working_dir:
             task_input["working_dir"] = working_dir
-        result = await agent._run_evaluation(task_input)
+        if enable_atif:
+            async with atif_scope(
+                agent,
+                path=LOGS_DIR / "trajectory.atif.json",
+                agent_model_name=model,
+            ):
+                result = await agent._run_evaluation(task_input)
+        else:
+            result = await agent._run_evaluation(task_input)
         result.update(get_task_tokens())
         _write_result(result, model, agent_type)
         if _write_trajectory(agent):
             _write_behavior_report(model, agent_type)
+        if enable_atif:
+            logger.info("ATIF trajectory written → %s", LOGS_DIR / "trajectory.atif.json")
         _write_answer(result)
 
         if result.get("success"):
@@ -330,12 +350,14 @@ async def _run(
 @click.option("--instruction", required=True, help="Task instruction / problem statement")
 @click.option("--model", required=True, help="Model name in litellm format")
 @click.option("--agent-type", default="bench", show_default=True, help="Agent variant to run")
+@click.option("--enable-atif", is_flag=True, help="Also write an ATIF trajectory")
 @click.option("--working-dir", default=None, help="Working directory for the agent shell session")
 @click.option("--api-base", default=None, help="Override API base URL")
 def main(
     instruction: str,
     model: str,
     agent_type: str,
+    enable_atif: bool,
     working_dir: str | None,
     api_base: str | None,
 ) -> None:
@@ -344,6 +366,7 @@ def main(
     logger.info("nooa-bench runner starting")
     logger.info("  model:      %s", model)
     logger.info("  agent_type: %s", agent_type)
+    logger.info("  enable_atif: %s", enable_atif)
     if api_base:
         logger.info("  api_base:   %s", api_base)
 
@@ -359,7 +382,16 @@ def main(
     _setup_tracing(model=model, agent_type=agent_type)
 
     try:
-        exit_code = asyncio.run(_run(instruction, model, agent_type, api_base, working_dir))
+        exit_code = asyncio.run(
+            _run(
+                instruction,
+                model,
+                agent_type,
+                api_base,
+                working_dir,
+                enable_atif,
+            )
+        )
     except Exception as e:
         logger.exception("Runner failed with unhandled exception: %s", e)
         exit_code = 1

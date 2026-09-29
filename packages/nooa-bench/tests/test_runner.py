@@ -46,6 +46,45 @@ async def test_circular_debug_value_does_not_prevent_success_or_verifier_answer(
     assert not (tmp_path / "behavior.json").exists()
 
 
+@pytest.mark.asyncio
+async def test_enable_atif_adds_atif_alongside_event_trajectory(monkeypatch, tmp_path):
+    import json
+
+    from nooa.atif import Trajectory
+    from nooa.events import Task
+    from nooa.runtime.event_manager import EventManager
+    from nooa.unifiedllm import FakeLLMClient
+
+    class FinishedAgent:
+        def __init__(self, llm):
+            self.event_manager = EventManager()
+
+        async def _run_evaluation(self, task_input):
+            self.event_manager.add(Task(prompt=task_input["user_message"]))
+            return {"success": True, "response": "verified"}
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(runner, "LOGS_DIR", tmp_path)
+    monkeypatch.setattr(runner, "_import_agent_class", lambda _: FinishedAgent)
+    monkeypatch.setattr("nooa.unifiedllm.get_llm_client", lambda *args, **kwargs: FakeLLMClient())
+
+    assert await runner._run(
+        "task", "model", "bench", None, enable_atif=True
+    ) == 0
+
+    trajectory = Trajectory.model_validate_json(
+        (tmp_path / "trajectory.atif.json").read_text()
+    )
+    assert trajectory.schema_version == "ATIF-v1.7"
+    assert trajectory.agent.name == "FinishedAgent"
+    assert any("task" in str(step) for step in trajectory.steps)
+    events = json.loads((tmp_path / "trajectory.json").read_text())
+    assert events
+    assert (tmp_path / "behavior.json").exists()
+
+
 @pytest.mark.parametrize("agent_async", [False, True])
 @pytest.mark.parametrize("client_async", [False, True])
 @pytest.mark.parametrize(
