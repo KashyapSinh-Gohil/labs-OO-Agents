@@ -510,6 +510,24 @@ def test_plain_json_walk_refuses_a_large_container_before_queueing_it():
     assert peak < 1_000_000  # queueing a million children would take tens of megabytes
 
 
+@pytest.mark.parametrize("value", [["a\udcff"], {"a\udcff": 1}, "a\udcff"])
+def test_python_output_with_a_lone_surrogate_string_still_serializes(backend, value):
+    """A string with a lone surrogate is not plain JSON, so it takes the fallback.
+
+    ``os.listdir`` on a non-UTF-8 filename returns such strings; pydantic-core
+    refuses to encode them, which used to wedge the event store.
+    """
+    event = PythonOutput(
+        tool_call_id="",
+        execution_status="complete",
+        execution_count=1,
+        value=value,
+    )
+    assert "udcff" in event.model_dump_json()
+    backend.store("surrogate", event)
+    assert backend.get("surrogate") is not None
+
+
 def test_json_safe_still_probes_other_values(monkeypatch):
     """Anything else is still probed: native types pass, unencodable ones fall back."""
     import asyncio

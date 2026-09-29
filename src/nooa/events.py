@@ -151,16 +151,31 @@ class TextOnlyReply(EventBase):  # type: ignore[misc]
     ] = 0
 
 
-_PLAIN_JSON_SCALARS = (str, int, float, bool)
+_PLAIN_JSON_SCALARS = (int, float, bool)
 _PLAIN_JSON_MAX_DEPTH = 32
 _PLAIN_JSON_MAX_ITEMS = 10_000
+
+
+def _is_utf8_str(value: Any) -> bool:
+    """True if ``value`` is an exact ``str`` that UTF-8 can encode (no lone surrogates)."""
+    if type(value) is not str:
+        return False
+    if value.isascii():
+        return True
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _is_plain_json(value: Any) -> bool:
     """True if ``value`` is built only from plain JSON types, checked within fixed bounds.
 
     Exact types only (a ``str`` subclass or enum still takes the probe), dict
-    keys must be ``str``, and the walk gives up (returns False) past
+    keys must be ``str``, strings must be UTF-8 encodable (pydantic-core refuses
+    lone surrogates, as ``os.listdir`` returns for non-UTF-8 filenames), and the
+    walk gives up (returns False) past
     ``_PLAIN_JSON_MAX_DEPTH`` levels or ``_PLAIN_JSON_MAX_ITEMS`` values.
     """
     budget = _PLAIN_JSON_MAX_ITEMS
@@ -173,13 +188,17 @@ def _is_plain_json(value: Any) -> bool:
         kind = type(item)
         if item is None or kind in _PLAIN_JSON_SCALARS:
             continue
+        if kind is str:
+            if not _is_utf8_str(item):
+                return False
+            continue
         if kind is not dict and kind is not list and kind is not tuple:
             return False
         # Refuse before queueing, so a huge container costs nothing to reject.
         if len(stack) + len(item) > budget:
             return False
         if kind is dict:
-            if any(type(key) is not str for key in item):
+            if not all(_is_utf8_str(key) for key in item):
                 return False
             stack.extend((child, depth + 1) for child in item.values())
         else:
