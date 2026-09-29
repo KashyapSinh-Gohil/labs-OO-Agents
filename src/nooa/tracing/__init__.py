@@ -424,10 +424,6 @@ def register_hooks_in_current_context() -> None:
         set_hooks(compose_hooks(get_hooks(), _hooks))
 
 
-# Former private name, kept for existing callers.
-_re_register_hooks = register_hooks_in_current_context
-
-
 def _add_exporters(provider: TracerProvider, exporters: list[SpanExporter]) -> None:
     """Attach span processors for each exporter to *provider*.
 

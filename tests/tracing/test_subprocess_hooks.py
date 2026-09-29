@@ -11,7 +11,8 @@ Before the fix, ``enable_tracing()`` only called ``set_hooks()`` in the
 first-time-setup path.  Every task after the first started with
 ``get_hooks() == None``, so no AGENT/GENERATION spans were emitted.
 
-After the fix, the "already enabled" path calls ``_re_register_hooks()`` which
+After the fix, the "already enabled" path calls
+``register_hooks_in_current_context()`` which
 re-sets the hooks ContextVar in the current task context.
 """
 
@@ -111,7 +112,6 @@ def test_register_hooks_in_current_context_is_public_and_idempotent():
     from nooa.tracing import enable_tracing, exporters
 
     assert "register_hooks_in_current_context" in tracing.__all__
-    assert tracing._re_register_hooks is tracing.register_hooks_in_current_context
 
     with tempfile.TemporaryDirectory() as tmpdir:
         loop = asyncio.new_event_loop()
