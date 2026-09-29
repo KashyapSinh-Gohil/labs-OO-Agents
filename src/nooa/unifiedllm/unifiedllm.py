@@ -1085,6 +1085,37 @@ class TokenCalibration:
 _token_calibration = TokenCalibration()
 
 
+def _token_counter_messages(
+    messages: list[dict[str, Any] | LLMResponse | CacheBoundary],
+) -> list[Any]:
+    """Retag Responses-only content-block types for litellm.token_counter.
+
+    litellm's token_counter only recognizes text/image_url/tool_use/
+    tool_result/thinking/tool_reference block types and raises on
+    ResponsesClient's input_text/output_text blocks (see
+    _transform_messages), which would otherwise always fall through to the
+    per-message fallback below and silently drop that content from the
+    estimate -- collapsing it toward zero and inflating the calibration
+    ratio by whatever multiple was missed.
+    """
+    view = []
+    for msg in messages:
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(content, list):
+            msg = {
+                **msg,
+                "content": [
+                    {**block, "type": "text"}
+                    if isinstance(block, dict)
+                    and block.get("type") in {"input_text", "output_text"}
+                    else block
+                    for block in content
+                ],
+            }
+        view.append(msg)
+    return view
+
+
 def _update_token_calibration(
     model: str,
     messages: list[dict[str, Any] | LLMResponse | CacheBoundary],
@@ -1119,22 +1150,23 @@ def _update_token_calibration(
     # Calibration is best-effort: it must NEVER raise out of the (already paid)
     # response path. The whole estimate — primary AND fallback — is guarded.
     try:
+        counted = _token_counter_messages(messages)
         try:
-            estimated = litellm.token_counter(model=model, messages=messages)
+            estimated = litellm.token_counter(model=model, messages=counted)
             if tools:
                 # Count the full messages+tools payload the way the API bills it,
                 # then take the larger of the bare and with-tools counts
                 # (with_tools is normally >= bare; max only guards a tokenizer
                 # that returns less with tools attached).
                 with_tools = litellm.token_counter(
-                    model=model, messages=messages, tools=cast(Any, tools)
+                    model=model, messages=counted, tools=cast(Any, tools)
                 )
                 estimated = max(estimated, with_tools)
         except Exception:
             # token_counter can reject some message/tool shapes; fall back to the
             # per-message text sum rather than skip calibration entirely.
             estimated = 0
-            for msg in messages:
+            for msg in counted:
                 content = msg.get("content")
                 if isinstance(content, str):
                     estimated += litellm.token_counter(model=model, text=content)
@@ -1299,10 +1331,22 @@ class UnifiedLLM(ABC):
     async def __aexit__(self, *exc_info):
         await self.aclose()
 
-    def _prepare_cache_boundary(self, messages, *, responses, model=None, instructions=None):
+    def _resolve_cache_mapping(self, model: str | None = None, *, responses: bool) -> str | None:
+        """The single source of truth for which cache_control mapping applies.
+
+        Both the marking decision here and the rendering decision in
+        call()/acall() (whether content is pre-wrapped so marking doesn't
+        change a message's wire shape) must agree, or the exact class of bug
+        this stability fix exists to prevent reappears -- silently desynced
+        between two copies of the same logic.
+        """
         mapping = self.cache_breakpoint
         if mapping == "auto" and not responses:
             mapping = "anthropic" if _is_anthropic_model(model or self.model) else None
+        return mapping
+
+    def _prepare_cache_boundary(self, messages, *, responses, model=None, instructions=None):
+        mapping = self._resolve_cache_mapping(model, responses=responses)
         return apply_cache_policy(messages, mapping, responses=responses, instructions=instructions)
 
     def count_tokens(self, text: str) -> int:
@@ -1838,15 +1882,12 @@ class CompletionClient(UnifiedLLM):
         effective_model = self._effective_model(call_config)
         self._validate_cache_breakpoint_model(effective_model)
         state_scope = replay_state.replay_scope(effective_model, "chat", call_config)
-        # Mirrors _prepare_cache_boundary's own mapping decision below: scope's
-        # resolved provider (from litellm) and this check can disagree for
-        # gateway-routed models, and it's this check -- not scope -- that
+        # Scope's resolved provider (from litellm) and _resolve_cache_mapping
+        # can disagree for gateway-routed models; the latter -- not scope --
         # decides whether Anthropic-style cache_control marking is applied.
-        cache_mapping = self.cache_breakpoint
-        if cache_mapping == "auto":
-            cache_mapping = "anthropic" if _is_anthropic_model(effective_model) else None
+        cache_mapping = self._resolve_cache_mapping(effective_model, responses=False)
         messages = replay_state.prepare_chat_messages(
-            messages, state_scope, anthropic_marking=cache_mapping == "anthropic"
+            messages, state_scope, anthropic_cache_marking=cache_mapping == "anthropic"
         )
 
         # Choose the stable-prefix breakpoint on projected provider messages.
@@ -1939,15 +1980,12 @@ class CompletionClient(UnifiedLLM):
         effective_model = self._effective_model(call_config)
         self._validate_cache_breakpoint_model(effective_model)
         state_scope = replay_state.replay_scope(effective_model, "chat", call_config)
-        # Mirrors _prepare_cache_boundary's own mapping decision below: scope's
-        # resolved provider (from litellm) and this check can disagree for
-        # gateway-routed models, and it's this check -- not scope -- that
+        # Scope's resolved provider (from litellm) and _resolve_cache_mapping
+        # can disagree for gateway-routed models; the latter -- not scope --
         # decides whether Anthropic-style cache_control marking is applied.
-        cache_mapping = self.cache_breakpoint
-        if cache_mapping == "auto":
-            cache_mapping = "anthropic" if _is_anthropic_model(effective_model) else None
+        cache_mapping = self._resolve_cache_mapping(effective_model, responses=False)
         messages = replay_state.prepare_chat_messages(
-            messages, state_scope, anthropic_marking=cache_mapping == "anthropic"
+            messages, state_scope, anthropic_cache_marking=cache_mapping == "anthropic"
         )
 
         # Choose the stable-prefix breakpoint on projected provider messages.
@@ -2453,9 +2491,7 @@ class ResponsesClient(UnifiedLLM):
                 # Same stability rationale as the input_text wrapping below -- a
                 # plain string here would render differently than its
                 # cache-marked list form once this tool result becomes history.
-                output = (
-                    [{"type": "input_text", "text": content}] if content else content
-                )
+                output = [{"type": "input_text", "text": content}] if content else content
                 item = {
                     "type": "function_call_output",
                     "call_id": msg["tool_call_id"],
@@ -2537,6 +2573,16 @@ class ResponsesClient(UnifiedLLM):
                                 if image.get("detail"):
                                     block["detail"] = image["detail"]
                             block["type"] = "input_image"
+                if item.get("type") == "function_call_output" and isinstance(
+                    item.get("output"), str
+                ):
+                    # Same stability rationale as the tool-message conversion
+                    # branch above -- an already-native function_call_output
+                    # (not converted from a role="tool" message) took this
+                    # generic path unwrapped, so it still flipped shape
+                    # whenever apply_cache_policy marked it.
+                    if item["output"]:
+                        item["output"] = [{"type": "input_text", "text": item["output"]}]
                 transformed.append(item)
         return transformed, "\n\n".join(instructions) or None
 

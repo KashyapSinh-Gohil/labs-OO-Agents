@@ -83,7 +83,7 @@ async def test_responses_calibration_counts_instructions(monkeypatch, is_async):
     assert estimates == [
         [
             messages[0],
-            {"role": "user", "content": [{"type": "input_text", "text": "y"}]},
+            {"role": "user", "content": [{"type": "text", "text": "y"}]},
         ]
     ]
     assert calibration.ratio("openai/gpt-5.6") == 1.0
@@ -99,3 +99,30 @@ def test_malformed_refusal_still_raises(bad):
             [{"type": "message", "content": [{"type": "refusal", "refusal": bad}]}],
             "responses:openai:test",
         )
+
+
+def test_calibration_survives_input_text_wrapped_content(monkeypatch):
+    """litellm.token_counter chokes on Responses input_text/output_text blocks,
+    and the fallback only recognizes type=="text" -- so wrapped content used
+    to silently undercount to near-zero, driving the shared per-model
+    calibration ratio to absurd multiples (observed ~41x) from one call. The
+    estimate must survive the real (unmocked) litellm.token_counter.
+    """
+    from nooa.unifiedllm import unifiedllm as implementation
+
+    calibration = implementation.TokenCalibration()
+    monkeypatch.setattr(implementation, "_token_calibration", calibration)
+    messages = [
+        {"role": "system", "content": "You are a helpful coding assistant. " * 20},
+        {"role": "user", "content": [{"type": "input_text", "text": "Please help me. " * 50}]},
+        {
+            "type": "function_call_output",
+            "call_id": "c1",
+            "output": [{"type": "input_text", "text": "result data. " * 50}],
+        },
+    ]
+    implementation._update_token_calibration(
+        "gpt-5.6", messages, LLMUsage(input_tokens=1000), tools=None, instructions=None
+    )
+    ratio = calibration.ratio("gpt-5.6")
+    assert 0.3 <= ratio <= 5.0, f"calibration ratio blew up to {ratio}; estimate likely collapsed"

@@ -186,7 +186,11 @@ class TestResponsesClientTransformMessages:
         assert input_msgs == [
             {"role": "user", "content": [{"type": "input_text", "text": "Hi"}]},
             {"type": "function_call", "call_id": "tc1", "name": "foo", "arguments": "{}"},
-            {"type": "function_call_output", "call_id": "tc1", "output": "bar"},
+            {
+                "type": "function_call_output",
+                "call_id": "tc1",
+                "output": [{"type": "input_text", "text": "bar"}],
+            },
         ]
 
     def test_legacy_openai_format_conversion(self, client):

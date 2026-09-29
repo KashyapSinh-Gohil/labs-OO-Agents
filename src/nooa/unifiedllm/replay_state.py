@@ -288,7 +288,7 @@ def prepare_chat_messages(
     messages: list[LLMResponse | dict[str, Any] | CacheBoundary],
     scope: str | None,
     *,
-    anthropic_marking: bool = False,
+    anthropic_cache_marking: bool = False,
 ) -> list[dict | CacheBoundary]:
     """Project stored turns; retain explicit fields in caller-written dictionaries.
 
@@ -297,7 +297,7 @@ def prepare_chat_messages(
     to fold that text into content. Raw dictionaries still cannot carry opaque
     state, and request containers are detached before the SDK can mutate them.
 
-    ``anthropic_marking`` reflects whether this call's cache boundary will
+    ``anthropic_cache_marking`` reflects whether this call's cache boundary will
     actually be marked with Anthropic's ``cache_control`` block form -- the
     same check ``CompletionClient._prepare_cache_boundary`` uses -- not
     ``scope``'s resolved provider. litellm's own provider resolution and
@@ -313,7 +313,9 @@ def prepare_chat_messages(
     private_call_ids: dict[str, str] = {}
     for original in messages:
         if isinstance(original, LLMResponse):
-            message, ids = project_chat_turn(original, scope, anthropic_marking=anthropic_marking)
+            message, ids = project_chat_turn(
+                original, scope, anthropic_cache_marking=anthropic_cache_marking
+            )
             private_call_ids.update(ids)
             if (
                 message.get("content")
@@ -335,7 +337,7 @@ def prepare_chat_messages(
         reject_boundary_dict(message)
         reject_native_message(message, scope)
         message = copy.deepcopy(message)
-        if anthropic_marking and isinstance(message.get("content"), str):
+        if anthropic_cache_marking and isinstance(message.get("content"), str):
             # Same stability rationale as project_chat_turn's assistant-content
             # wrapping -- apply_cache_policy's Anthropic marking wraps whichever
             # message it marks this turn into a content block; unmarked
