@@ -9,10 +9,10 @@ from typing import Any
 
 from nooa_cli.coding import CodingAgent, CodingSlashCommandRegistry
 
-from nooa.interactive import Done, NeedInput, RespondReason, RespondResult, Waiting
+from nooa.interactive import Done, NeedInput, Waiting
 from nooa.slash_dispatch import SlashCommandResult
 
-TurnResult = Done | NeedInput | Waiting | RespondResult
+TurnResult = Done | NeedInput | Waiting
 
 
 class InteractiveSessionDispatcher:
@@ -82,9 +82,8 @@ class InteractiveSessionDispatcher:
 
             result = await self.agent.handle(notification)
             self._show(result)
-            # Keep the prompt open while the turn waits on a job or queue; both
-            # the typed Waiting and the older RespondResult(kind=WAIT) mean that.
-            if isinstance(result, Waiting) or getattr(result, "kind", None) is RespondReason.WAIT:
+            # Keep the prompt open while the turn waits on a job or queue.
+            if isinstance(result, Waiting):
                 continue
             return result
 
@@ -93,16 +92,13 @@ class InteractiveSessionDispatcher:
 
         ``Done.message`` is the reply, ``Waiting.message`` the line shown while
         waiting, and a ``NeedInput`` shows its question with any choices. The
-        agent is told not to send these itself, so the host must. The older
-        ``RespondResult`` carries no text for the person.
+        agent is told not to send these itself, so the host must.
         """
         if isinstance(result, NeedInput):
             choices = "".join(f"\n- {option}" for option in result.options or [])
             text: str | None = result.question + (f"\n{choices}" if choices else "")
-        elif isinstance(result, Done | Waiting):
-            text = result.message
         else:
-            text = None
+            text = result.message
         if text:
             self.agent.message(text)
 

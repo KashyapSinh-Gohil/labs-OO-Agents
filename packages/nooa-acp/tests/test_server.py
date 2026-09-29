@@ -30,7 +30,7 @@ from nooa_cli.commands import discover_commands
 
 from nooa.context_blocks.events import ToolCallEvent
 from nooa.errors import GenerationError
-from nooa.interactive import RespondReason, RespondResult
+from nooa.interactive import Done
 from nooa.skill import Skill, slash_command
 from nooa.slash_dispatch import SlashCommandResult
 from nooa.unifiedllm import FakeLLMClient
@@ -91,8 +91,7 @@ def _completed_llm() -> FakeLLMClient:
         "execute_python",
         {
             "code": (
-                "self.message('ACP response')\n"
-                "return_result(RespondReason.DONE, explanation='request complete')"
+                "self.message('ACP response')\nreturn_result(Done(explanation='request complete'))"
             )
         },
     )
@@ -354,7 +353,7 @@ async def test_adapter_dispatches_agent_facing_skill_command(tmp_path, monkeypat
 
     async def handle(notification):
         notifications.append(notification)
-        return RespondResult(kind=RespondReason.DONE, explanation="done")
+        return Done(explanation="done")
 
     with patch.object(runtime.agent, "handle", side_effect=handle):
         response = await adapter.prompt(
@@ -440,7 +439,7 @@ async def test_unknown_slash_command_is_forwarded_as_an_ordinary_prompt(tmp_path
     adapter.on_connect(client)  # type: ignore[arg-type]
     created = await adapter.new_session(str(tmp_path))
     runtime = await _session(adapter, created.session_id)
-    result = RespondResult(kind=RespondReason.DONE, explanation="done")
+    result = Done(explanation="done")
 
     with patch.object(
         runtime.dispatcher,
@@ -596,7 +595,7 @@ async def test_cancel_clears_agent_facing_slash_result_and_session_remains_usabl
 
     async def resumed_handle(notification):
         observed.append(notification)
-        return RespondResult(kind=RespondReason.DONE, explanation="done")
+        return Done(explanation="done")
 
     with patch.object(runtime.agent, "handle", side_effect=resumed_handle):
         resumed = await adapter.prompt(created.session_id, [text_block("continue")])
@@ -736,7 +735,7 @@ async def test_adapter_preserves_prompt_whitespace(tmp_path):
 
     session = await adapter.new_session(str(tmp_path))
     runtime = await _session(adapter, session.session_id)
-    result = RespondResult(kind=RespondReason.DONE, explanation="done")
+    result = Done(explanation="done")
     submit = AsyncMock(return_value=result)
     with patch.object(runtime.dispatcher, "submit", submit):
         await adapter.prompt(session.session_id, [text_block("  indented\n")])
@@ -1094,7 +1093,7 @@ async def test_adapter_rejects_two_prompts_for_same_session(tmp_path):
     async def submit(_text: str):
         started.set()
         await release.wait()
-        return RespondResult(kind=RespondReason.DONE, explanation="done")
+        return Done(explanation="done")
 
     with patch.object(session.dispatcher, "submit", side_effect=submit):
         first = asyncio.create_task(adapter.prompt(created.session_id, [text_block("first")]))
