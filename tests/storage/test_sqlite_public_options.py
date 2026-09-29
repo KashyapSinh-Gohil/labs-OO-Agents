@@ -71,6 +71,21 @@ def test_save_snapshot_json_rejects_a_non_json_blob(tmp_path):
         assert storage.get_latest_snapshot_id() is None
 
 
+def test_save_snapshot_does_not_reparse_its_own_json(tmp_path):
+    """``save_snapshot`` serializes the snapshot itself, so it skips the JSON check."""
+    from nooa import Agent
+    from nooa.unifiedllm import FakeLLMClient
+
+    class Snap(Agent, llm=FakeLLMClient()):
+        pass
+
+    agent = Snap()
+    with SQLiteStorageManager(tmp_path / "s.db") as storage:
+        with mock.patch.object(sqlite_module.json, "loads", side_effect=AssertionError):
+            snapshot_id = storage.save_snapshot(agent)
+        assert storage.get_latest_snapshot_id() == snapshot_id
+
+
 def _journal_mode(storage):
     return storage._conn.execute("PRAGMA journal_mode").fetchone()[0]
 

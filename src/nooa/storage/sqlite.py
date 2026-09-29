@@ -885,7 +885,7 @@ class SQLiteStorageManager:
 
     def save_snapshot(self, agent: Agent) -> str:
         snapshot = AgentSnapshot.from_agent(agent)
-        return self.save_snapshot_json(json.dumps(snapshot_to_dict(snapshot)))
+        return self._insert_snapshot(json.dumps(snapshot_to_dict(snapshot)), None, None)
 
     def save_snapshot_json(
         self,
@@ -914,6 +914,10 @@ class SQLiteStorageManager:
             ValueError: If ``data`` is not valid JSON.
         """
         json.loads(data)  # JSONDecodeError is a ValueError
+        return self._insert_snapshot(data, snapshot_id, created_at)
+
+    def _insert_snapshot(self, data: str, snapshot_id: str | None, created_at: str | None) -> str:
+        """Insert snapshot JSON text as given (no validation) and return its ``snapshot_id``."""
         snapshot_id = snapshot_id or str(uuid.uuid4())
         created_at = created_at or datetime.now(UTC).isoformat()
         with self._db_lock:
