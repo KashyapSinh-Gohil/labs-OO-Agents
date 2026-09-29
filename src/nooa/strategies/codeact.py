@@ -2898,13 +2898,21 @@ Standard Python builtins and agent instance (`self`) are available."""
                 )
             except asyncio.CancelledError as cancel:
                 if tool_call_id is not None:
-                    self._record_cancelled_cell(
-                        runtime,
-                        tool_call_id,
-                        session.execution_count,
-                        cancel,
-                        output_metadata or {},
-                    )
+                    # A failure to store the record (SQLite, serialization) must
+                    # not replace the cancellation, so it is logged instead.
+                    try:
+                        self._record_cancelled_cell(
+                            runtime,
+                            tool_call_id,
+                            session.execution_count,
+                            cancel,
+                            output_metadata or {},
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Could not record cancelled cell %s; re-raising the cancel",
+                            tool_call_id,
+                        )
                 raise
 
     def _format_execution_error(

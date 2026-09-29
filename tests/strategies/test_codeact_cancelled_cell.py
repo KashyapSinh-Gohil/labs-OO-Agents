@@ -89,6 +89,35 @@ async def test_cancel_during_cell_records_cancelled_output():
     assert calls[0].result.result_status is ResultStatus.RUNNING
 
 
+@pytest.mark.asyncio
+async def test_a_failing_record_does_not_replace_the_cancellation(monkeypatch, caplog):
+    """If storing the cancelled cell fails, the cancel still propagates as a cancel.
+
+    ``_record_cancelled_cell`` runs inside ``except CancelledError``; an error
+    from ``event_manager.add`` (a SQLite or serialization failure) must be
+    logged, not raised in place of the ``CancelledError``.
+    """
+    global CELL_STARTED, CELL_BLOCKER
+    CELL_STARTED = asyncio.Event()
+    CELL_BLOCKER = asyncio.Event()
+    agent = Worker(llm=FakeLLMClient([_cell_response(_CELL, "call_cell")]))
+    real_add = agent.event_manager.add
+
+    def add(event, *args, **kwargs):
+        if isinstance(event, PythonOutput) and event.execution_status is ResultStatus.CANCELLED:
+            raise RuntimeError("store is broken")
+        return real_add(event, *args, **kwargs)
+
+    monkeypatch.setattr(agent.event_manager, "add", add)
+
+    task = asyncio.create_task(agent.work())
+    await asyncio.wait_for(CELL_STARTED.wait(), timeout=10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert "store is broken" in caplog.text
+
+
 class _BlockingLLM(FakeLLMClient):
     """A model call that never returns until cancelled."""
 
