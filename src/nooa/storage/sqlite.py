@@ -719,7 +719,7 @@ def delete_sqlite_database(db_path: str | Path) -> bool:
     :class:`SessionAlreadyActiveError` instead of unlinking an open database.
     The lock file itself is intentionally retained: unlinking a flock target
     creates a race where another process can lock a different inode at the
-    same path.
+    same path. Its owner record is blanked before the lock is released.
 
     Returns:
         True when the main database existed, otherwise false.
@@ -741,6 +741,9 @@ def delete_sqlite_database(db_path: str | Path) -> bool:
                 pass
         return existed
     finally:
+        # Blank the record before releasing, as a clean close does, so the
+        # retained lock file does not name this process as a live owner.
+        _blank_lock_if_ours(lock_path)
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
 

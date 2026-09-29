@@ -46,8 +46,8 @@ to follow semantic versioning.
   - `TodoManager.status()` shows at most the two newest done todos when no
     todo is active; the rest are counted.
   - A session lock file records `<pid> <hostname>` and is blanked on a
-    clean close, so another machine sharing the directory can tell the
-    session is in use.
+    clean close and after `delete_sqlite_database`, so another machine
+    sharing the directory can tell the session is in use.
   - `Channel.remove(item)` withdraws one pending item by identity; it
     publishes neither event.
   - `EventBase.event_role` returns an event's provider role (its `_role`

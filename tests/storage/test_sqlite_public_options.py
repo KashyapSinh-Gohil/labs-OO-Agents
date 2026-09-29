@@ -163,3 +163,15 @@ def test_read_lock_owner_is_public_and_reads_the_owner_record(tmp_path):
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
+
+
+def test_delete_leaves_a_blank_lock_record(tmp_path):
+    """Deleting takes the lock; the retained lock file must not name a live owner."""
+    from nooa.storage import delete_sqlite_database, read_lock_owner
+
+    path = tmp_path / "s.db"
+    with SQLiteStorageManager(path) as storage:
+        storage.save_snapshot_json("{}")
+    assert delete_sqlite_database(path) is True
+    assert not path.exists()
+    assert read_lock_owner(str(tmp_path / "s.lock")) == (None, None)
