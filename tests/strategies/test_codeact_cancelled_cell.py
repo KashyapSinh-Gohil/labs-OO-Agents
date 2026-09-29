@@ -21,6 +21,7 @@ from nooa.config.strategy_config import CodeActConfig
 from nooa.context_blocks.events import ToolCallEvent
 from nooa.events import PythonOutput, ResultStatus
 from nooa.strategies.codeact import CodeActStrategy
+from nooa.strategies.pure_python import PurePythonStrategy
 from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
 
 # Module globals are visible to generated cells (execute_code builds its
@@ -193,9 +194,9 @@ class Nesting(Agent, llm=FakeLLMClient()):
 async def test_nested_cancel_records_each_cell_with_its_own_output():
     """A cancel through a nested CodeAct call records both cells, each with its own output.
 
-    The same CancelledError passes through both cells. The inner cell's
-    recorder takes the output attached for it, so the outer cell's capture
-    attaches its own on the way out instead of the inner one being reused.
+    The same CancelledError passes through both cells. Each cell's capture
+    appends its own output, and each recorder takes the last entry, which is
+    the one its own cell just appended.
     """
     global CELL_STARTED, CELL_BLOCKER
     CELL_STARTED = asyncio.Event()
@@ -220,3 +221,61 @@ async def test_nested_cancel_records_each_cell_with_its_own_output():
     assert "inner partial" in outputs["call_inner"].stdout
     assert "outer before the nested call" in outputs["call_outer"].stdout
     assert "inner partial" not in outputs["call_outer"].stdout
+
+
+_STEP_CELL = """\
+print("step 1")
+await self.inner()
+"""
+
+_PURE_PYTHON_CODE = """\
+print("pure python partial")
+CELL_STARTED.set()
+await CELL_BLOCKER.wait()
+"""
+
+
+class MixedNesting(Agent, llm=FakeLLMClient()):
+    @strategy(CodeActStrategy())
+    async def work(self) -> str:
+        """Do the work."""
+        ...
+
+    @strategy(PurePythonStrategy())
+    async def inner(self) -> str:
+        """Do the inner work."""
+        ...
+
+
+@pytest.mark.asyncio
+async def test_nested_cancel_through_a_non_codeact_cell_keeps_the_outer_output():
+    """An inner cell that records nothing must not lend its output to the outer cell.
+
+    The PurePython strategy runs its code through ``execute_code`` but does not
+    record a cancelled cell, so its partial result stays on the exception. The
+    enclosing CodeAct cell must still record its own output.
+    """
+    global CELL_STARTED, CELL_BLOCKER
+    CELL_STARTED = asyncio.Event()
+    CELL_BLOCKER = asyncio.Event()
+    agent = MixedNesting(
+        llm=FakeLLMClient(
+            [
+                _cell_response(_STEP_CELL, "call_outer"),
+                LLMResponse(raw_response=None, content=_PURE_PYTHON_CODE, finish_reason="stop"),
+            ]
+        )
+    )
+
+    task = asyncio.create_task(agent.work())
+    await asyncio.wait_for(CELL_STARTED.wait(), timeout=10)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    outputs = [e for e in agent.event_manager.values() if isinstance(e, PythonOutput)]
+    outer = [o for o in outputs if o.tool_call_id == "call_outer"]
+    assert len(outer) == 1
+    assert outer[0].execution_status is ResultStatus.CANCELLED
+    assert "step 1" in outer[0].stdout
+    assert "pure python partial" not in outer[0].stdout

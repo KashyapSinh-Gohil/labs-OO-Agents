@@ -16,9 +16,10 @@ to follow semantic versioning.
   - A cancelled CodeAct cell is now recorded for the model: an appended
     `PythonOutput` with the new `ResultStatus.CANCELLED` carries the stdout
     and stderr produced before the cancel. The cell's `ToolCallEvent` is
-    left as it was written. `execute_code` attaches the partial
+    left as it was written. `execute_code` appends the partial
     `ExecutionResult` (new `cancelled` flag) to the re-raised
-    `CancelledError` as `execution_result`. The ACP bridge still shows
+    `CancelledError`'s `execution_results` list, one entry per nested
+    cell, innermost first. The ACP bridge still shows
     the cell as "Cancelled".
   - `Notification.description` renders in full (up to 20,000 characters)
     and `Notification.value` carries an optional object. Session hosts use

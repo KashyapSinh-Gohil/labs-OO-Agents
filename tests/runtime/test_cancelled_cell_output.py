@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """A cancelled cell keeps the output it produced before the cancel.
 
-``execute_code`` re-raises ``asyncio.CancelledError`` and attaches a partial
-``ExecutionResult`` (``cancelled=True``) built from the stdout/stderr captured
-up to the cancel point, so the strategy can show the model what ran.
+``execute_code`` re-raises ``asyncio.CancelledError`` and appends a partial
+``ExecutionResult`` (``cancelled=True``), built from the stdout/stderr captured
+up to the cancel point, to the exception's ``execution_results`` list, so the
+strategy can show the model what ran.
 """
 
 import asyncio
@@ -53,7 +54,9 @@ async def test_cancelled_cell_attaches_partial_result(test_agent):
     with pytest.raises(asyncio.CancelledError) as excinfo:
         await task
 
-    partial = getattr(excinfo.value, "execution_result", None)
+    results = getattr(excinfo.value, "execution_results", None)
+    assert isinstance(results, list) and len(results) == 1
+    partial = results[0]
     assert isinstance(partial, ExecutionResult)
     assert partial.cancelled is True
     assert partial.success is False
@@ -82,8 +85,8 @@ await runtime.execute_code(
 
 
 @pytest.mark.asyncio
-async def test_nested_cancel_keeps_the_innermost_partial_result(test_agent):
-    """One CancelledError passes through both frames; the inner cell's output wins."""
+async def test_nested_cancel_appends_each_partial_result_innermost_first(test_agent):
+    """One CancelledError passes through both frames; each appends its own output."""
     started = asyncio.Event()
     blocker = asyncio.Event()
     task = asyncio.create_task(
@@ -105,7 +108,9 @@ async def test_nested_cancel_keeps_the_innermost_partial_result(test_agent):
     with pytest.raises(asyncio.CancelledError) as excinfo:
         await task
 
-    partial = excinfo.value.execution_result
-    assert "before cancel" in partial.stdout
-    assert "warning before cancel" in partial.stderr
-    assert "outer before inner" not in partial.stdout
+    inner, outer = excinfo.value.execution_results
+    assert "before cancel" in inner.stdout
+    assert "warning before cancel" in inner.stderr
+    assert "outer before inner" not in inner.stdout
+    assert "outer before inner" in outer.stdout
+    assert "before cancel" not in outer.stdout

@@ -681,8 +681,9 @@ class ExecutionResult(BaseModel):
         default=False,
         description=(
             "True for the partial result of a cell interrupted by asyncio cancellation. "
-            "execute_code() re-raises the CancelledError and attaches this result to it "
-            "as ``execution_result``; stdout/stderr hold the output produced before the cancel"
+            "execute_code() re-raises the CancelledError and appends this result to its "
+            "``execution_results`` list (innermost cell first); stdout/stderr hold the "
+            "output produced before the cancel"
         ),
     )
 

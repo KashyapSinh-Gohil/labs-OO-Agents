@@ -1806,22 +1806,24 @@ Standard Python builtins and agent instance (`self`) are available."""
 
         Appends a ``PythonOutput`` with ``ResultStatus.CANCELLED`` and the
         stdout/stderr the cell produced before the cancel. ``execute_code``
-        attaches that partial output to the exception as ``execution_result``;
-        when it is absent (the cancel landed before capture started) the output
-        is empty. The cell's tool-call event is left exactly as it was written:
+        appends that partial output to the exception's ``execution_results``
+        list; when it is absent (the cancel landed before capture started) the
+        output is empty. The cell's tool-call event is left exactly as it was written:
         a cancel is a later fact about the turn, recorded by appending, not by
         rewriting an earlier event (which would also invalidate cached prompt
         prefixes). ``metadata`` is the tag the cell's normal ``PythonOutput``
         would carry (the prefill tag for a prefill step). ``_execute_code``
         calls this and re-raises the cancellation.
 
-        The attached output is taken, not just read. The same exception passes
-        through every enclosing cell of a nested call; clearing it lets the
-        enclosing ``execute_code`` attach that cell's own output on the way out.
+        The same exception passes through every enclosing cell of a nested
+        call, and each ``execute_code`` frame appends its own result, innermost
+        first. This is called right after this cell's frame unwound, so its
+        result is the last entry; it is removed so an enclosing cell takes its
+        own. Results left by inner cells that record nothing (other strategies)
+        stay earlier in the list and are never mistaken for this cell's output.
         """
-        partial = getattr(cancel, "execution_result", None)
-        if partial is not None:
-            cancel.execution_result = None  # type: ignore[attr-defined]
+        results = getattr(cancel, "execution_results", None)
+        partial = results.pop() if results else None
         runtime.event_manager.add(
             PythonOutput(
                 tool_call_id=tool_call_id,
