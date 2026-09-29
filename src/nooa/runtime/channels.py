@@ -637,10 +637,6 @@ class ChannelReader[T]:
         return f"ChannelReader(name={self.name!r})"
 
 
-# Former private name, kept for existing callers.
-_ChannelReader = ChannelReader
-
-
 # ---------------------------------------------------------------------------
 # QueueManager
 # ---------------------------------------------------------------------------

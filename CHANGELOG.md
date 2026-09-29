@@ -64,7 +64,7 @@ to follow semantic versioning.
     file's owner record.
   - `nooa.tools` exports `BashSession`, `StreamEvent` and `StreamDone`;
     `nooa.runtime.channels.ChannelReader` is the public name of the channel
-    read facade (`_ChannelReader` remains as an alias).
+    read facade; the private `_ChannelReader` name is removed.
   - `nooa.tracing.register_hooks_in_current_context()` installs the tracing
     hooks in a context that did not inherit them, for hosts that run agents
     in fresh asyncio or thread contexts.

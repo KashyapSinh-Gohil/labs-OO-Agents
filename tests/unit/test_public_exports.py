@@ -19,10 +19,9 @@ def test_tools_exports_bash_session_and_stream_types():
         assert name in nooa.tools.__all__
 
 
-def test_channels_exports_channel_reader_and_keeps_the_alias():
+def test_channels_exports_channel_reader():
     from nooa.runtime.channels import ChannelReader
 
-    assert channels._ChannelReader is ChannelReader
     ch = channels.Channel("q", "queue")
     assert isinstance(ch.reader, ChannelReader)
     assert ChannelReader.__name__ == "ChannelReader"

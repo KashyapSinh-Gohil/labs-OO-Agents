@@ -50,7 +50,7 @@ with hidden:
     from nooa.agentdoc import pformat, spec
     from nooa.config import CodeActConfig
     from nooa.interactive import SummarizationConfig, install_summarizer
-    from nooa.runtime.channels import Channel, _ChannelReader
+    from nooa.runtime.channels import Channel, ChannelReader
     from nooa.runtime.restrictions import (
         DEFAULT_BLOCKED_MODULES,
         RestrictionsConfig,
@@ -517,7 +517,7 @@ class ArcSolverBase(InteractiveAgent):
 
     # Producer-side channel (hidden) + LLM-facing reader for harness states.
     _game_states_in: Annotated[Channel, hidden, nosnapshot]
-    game_states: Annotated[_ChannelReader, nosnapshot]
+    game_states: Annotated[ChannelReader, nosnapshot]
     # Namespace of loaded helper modules: after load_helpers(), call e.g.
     # self.h.world_model.predict(...). HIDDEN from the rendered <state> block:
     # a loaded module's repr is "<module 'x' from '/abs/run_dir/.../x.py'>", and
