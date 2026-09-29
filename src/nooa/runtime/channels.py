@@ -70,11 +70,11 @@ class ChannelItemConsumed(EventBase):
 class ChannelItemsDiscarded(EventBase):
     """Published when pending items leave a queue-mode channel unconsumed.
 
-    ``flush()``, ``clear()``, ``pop_last()`` and
-    ``QueueManager.remove_channel()`` publish it once per call with the items
-    they dropped, head to tail, never with an empty list. ``remove()`` does
-    not: a withdraw is the caller's own decision. A runtime event, like
-    ``ChannelItemConsumed``.
+    ``flush()``, ``clear()`` and ``QueueManager.remove_channel()`` publish it
+    once per call with the items they dropped, head to tail, never with an
+    empty list. ``remove()`` and ``pop_last()`` do not: a withdraw is the
+    caller's own decision, and ``pop_last()`` returns the item to the caller.
+    A runtime event, like ``ChannelItemConsumed``.
     """
 
     _role: ClassVar[Role] = Role.RUNTIME_EVENT
@@ -479,13 +479,13 @@ class Channel[T]:
 
         Used by the TUI for "edit what I just queued" UX (Up-arrow):
         the user pulls the queued message back into the input buffer.
-        Returns ``None`` if the channel is empty.
+        Returns ``None`` if the channel is empty. Like ``remove()``, this is
+        a withdraw: nothing fires or is published, since the item goes back
+        to the caller rather than being dropped.
         """
         if not self._items:
             return None
-        item = self._items.pop()
-        self._fire_on_discard([item])
-        return item
+        return self._items.pop()
 
     def remove(self, item: T) -> bool:
         """Withdraw one pending item, matched by identity (``is``), not equality.

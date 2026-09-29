@@ -36,7 +36,8 @@ to follow semantic versioning.
   - A queue channel publishes two runtime events through the agent's event
     manager: `ChannelItemConsumed` when `get()`, `drain()` or `race()` hands
     an item to a consumer, and `ChannelItemsDiscarded` when `flush()`,
-    `clear()`, `pop_last()` or `remove_channel()` drops pending items.
+    `clear()` or `remove_channel()` drops pending items. `remove()` and
+    `pop_last()` withdraw an item and publish nothing.
     Subscribe with `event_manager.on(...)`; they are never recorded or shown
     to the model.
   - `nooa.strategies.codeact` names its two generation-limit messages,

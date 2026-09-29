@@ -178,9 +178,8 @@ async def test_consumed_items_are_published_once_each():
 
 def test_items_dropped_without_a_consumer_are_published():
     qm, q, seen = _watched()
-    for item in ("a", "b", "c", "d"):
+    for item in ("a", "b", "c"):
         q.put(item)
-    assert q.pop_last() == "d"
     q.put("e")
     assert q.flush() == 4
     q.put("f")
@@ -189,11 +188,20 @@ def test_items_dropped_without_a_consumer_are_published():
     q.put("g")
     qm.remove_channel("q")
     assert seen == [
-        ("discarded", ["d"]),
         ("discarded", ["a", "b", "c", "e"]),
         ("discarded", ["f"]),
         ("discarded", ["g"]),
     ]
+
+
+def test_pop_last_publishes_nothing():
+    """``pop_last`` hands the item back to the caller, so nothing was dropped."""
+    _qm, q, seen = _watched()
+    q.put("a")
+    q.put("b")
+    assert q.pop_last() == "b"
+    assert q.snapshot() == ["a"]
+    assert seen == []
 
 
 def test_channel_events_are_never_recorded_and_subscriber_errors_are_contained():
