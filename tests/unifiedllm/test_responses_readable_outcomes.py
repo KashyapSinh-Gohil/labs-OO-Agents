@@ -80,7 +80,12 @@ async def test_responses_calibration_counts_instructions(monkeypatch, is_async):
     messages = [{"role": "system", "content": "x" * 1000}, {"role": "user", "content": "y"}]
     async with ResponsesClient("openai/gpt-5.6", api_key="test") as client:
         await client.acall(messages) if is_async else client.call(messages)
-    assert estimates == [messages]
+    assert estimates == [
+        [
+            messages[0],
+            {"role": "user", "content": [{"type": "input_text", "text": "y"}]},
+        ]
+    ]
     assert calibration.ratio("openai/gpt-5.6") == 1.0
 
 

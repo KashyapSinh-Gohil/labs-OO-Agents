@@ -250,7 +250,13 @@ async def test_real_responses_message_structure_survives_json_resume(
         else:
             client.call(rendered)
         expected = output + (
-            [{"type": "function_call_output", "call_id": "call_1", "output": "complete"}]
+            [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [{"type": "input_text", "text": "complete"}],
+                }
+            ]
             if shape == "trailing_message"
             else []
         )

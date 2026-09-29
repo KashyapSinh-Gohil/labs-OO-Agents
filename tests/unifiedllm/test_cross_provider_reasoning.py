@@ -214,7 +214,7 @@ def test_cross_provider_replay_warns_hides_opaque_state_and_keeps_reasoning_text
 
         replayed = completion.call_args.kwargs["messages"]
         assistant = next(message for message in replayed if message.get("role") == "assistant")
-        assert assistant["content"] == "Inspect the value."
+        assert assistant["content"] == [{"type": "text", "text": "Inspect the value."}]
         assert [call["id"] for call in assistant["tool_calls"]] == ["call_1", "call_2"]
         assert GEMINI_SIGNATURE not in json.dumps(replayed)
         assert GEMINI_SIGNATURE_2 not in json.dumps(replayed)

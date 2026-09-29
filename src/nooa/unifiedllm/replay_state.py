@@ -285,7 +285,10 @@ def responses_reasoning_text(output: list[Any]) -> str | None:
 
 
 def prepare_chat_messages(
-    messages: list[LLMResponse | dict[str, Any] | CacheBoundary], scope: str | None
+    messages: list[LLMResponse | dict[str, Any] | CacheBoundary],
+    scope: str | None,
+    *,
+    anthropic_marking: bool = False,
 ) -> list[dict | CacheBoundary]:
     """Project stored turns; retain explicit fields in caller-written dictionaries.
 
@@ -293,6 +296,16 @@ def prepare_chat_messages(
     reasoning_content field is a caller's explicit wire setting, not a request
     to fold that text into content. Raw dictionaries still cannot carry opaque
     state, and request containers are detached before the SDK can mutate them.
+
+    ``anthropic_marking`` reflects whether this call's cache boundary will
+    actually be marked with Anthropic's ``cache_control`` block form -- the
+    same check ``CompletionClient._prepare_cache_boundary`` uses -- not
+    ``scope``'s resolved provider. litellm's own provider resolution and
+    NOOA's Anthropic-route detection can disagree for gateway-routed models
+    (e.g. ``openai/azure/anthropic/...``), where ``scope`` resolves to
+    ``"openai"`` even though Anthropic-style marking is what's actually
+    applied. Content must be pre-wrapped in whichever shape marking will use,
+    or a message's wire shape flips the turn it stops being the one marked.
     """
     from .chat_parts import project_chat_turn
 
@@ -300,7 +313,7 @@ def prepare_chat_messages(
     private_call_ids: dict[str, str] = {}
     for original in messages:
         if isinstance(original, LLMResponse):
-            message, ids = project_chat_turn(original, scope)
+            message, ids = project_chat_turn(original, scope, anthropic_marking=anthropic_marking)
             private_call_ids.update(ids)
             if (
                 message.get("content")
@@ -322,6 +335,17 @@ def prepare_chat_messages(
         reject_boundary_dict(message)
         reject_native_message(message, scope)
         message = copy.deepcopy(message)
+        if anthropic_marking and isinstance(message.get("content"), str):
+            # Same stability rationale as project_chat_turn's assistant-content
+            # wrapping -- apply_cache_policy's Anthropic marking wraps whichever
+            # message it marks this turn into a content block; unmarked
+            # plain-dict messages (user turns, tool results) must already be in
+            # that same shape or they'll flip once this message stops being the
+            # one marked. Anthropic rejects an empty text block, so leave a
+            # genuinely empty string alone.
+            content = message["content"]
+            if content:
+                message["content"] = [{"type": "text", "text": content}]
         call_id = message.get("tool_call_id")
         if isinstance(call_id, str):
             message["tool_call_id"] = private_call_ids.get(call_id, call_id)

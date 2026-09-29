@@ -180,7 +180,9 @@ def capture_chat_parts(message: Any, scope: str | None) -> tuple[AssistantPart, 
     return tuple(parts)
 
 
-def project_chat_turn(turn: LLMResponse, scope: str | None) -> tuple[dict, dict[str, str]]:
+def project_chat_turn(
+    turn: LLMResponse, scope: str | None, *, anthropic_marking: bool = False
+) -> tuple[dict, dict[str, str]]:
     """Build request-owned Chat fields from an immutable assistant turn.
 
     Projection is the only outbound layer that interprets native part data.
@@ -242,7 +244,21 @@ def project_chat_turn(turn: LLMResponse, scope: str | None) -> tuple[dict, dict[
         elif part.text:
             text.append(part.text)
     if text:
-        message["content"] = "\n\n".join(text)
+        joined = "\n\n".join(text)
+        # Anthropic's explicit cache_control marker can only attach to a
+        # content block, not a bare string, so apply_cache_policy wraps
+        # whichever message it marks this turn into [{"type": "text", ...}].
+        # That wrapping is never persisted -- next turn this same assistant
+        # turn re-renders here as a bare string again, changing its wire shape
+        # the moment it stops being newest. Wrap unconditionally whenever this
+        # call's cache boundary will use Anthropic-style marking, so the shape
+        # is stable whether or not this turn marks it. anthropic_marking
+        # reflects the actual marking CompletionClient will apply, not
+        # scope's resolved provider -- those two can disagree for
+        # gateway-routed models (see prepare_chat_messages).
+        message["content"] = (
+            [{"type": "text", "text": joined}] if anthropic_marking else joined
+        )
     elif message.get("tool_calls"):
         message["content"] = None
     return message, call_ids

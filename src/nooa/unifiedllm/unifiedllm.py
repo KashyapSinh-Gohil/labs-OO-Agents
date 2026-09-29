@@ -1838,7 +1838,16 @@ class CompletionClient(UnifiedLLM):
         effective_model = self._effective_model(call_config)
         self._validate_cache_breakpoint_model(effective_model)
         state_scope = replay_state.replay_scope(effective_model, "chat", call_config)
-        messages = replay_state.prepare_chat_messages(messages, state_scope)
+        # Mirrors _prepare_cache_boundary's own mapping decision below: scope's
+        # resolved provider (from litellm) and this check can disagree for
+        # gateway-routed models, and it's this check -- not scope -- that
+        # decides whether Anthropic-style cache_control marking is applied.
+        cache_mapping = self.cache_breakpoint
+        if cache_mapping == "auto":
+            cache_mapping = "anthropic" if _is_anthropic_model(effective_model) else None
+        messages = replay_state.prepare_chat_messages(
+            messages, state_scope, anthropic_marking=cache_mapping == "anthropic"
+        )
 
         # Choose the stable-prefix breakpoint on projected provider messages.
         prepared_messages, _, _ = self._prepare_cache_boundary(
@@ -1930,7 +1939,16 @@ class CompletionClient(UnifiedLLM):
         effective_model = self._effective_model(call_config)
         self._validate_cache_breakpoint_model(effective_model)
         state_scope = replay_state.replay_scope(effective_model, "chat", call_config)
-        messages = replay_state.prepare_chat_messages(messages, state_scope)
+        # Mirrors _prepare_cache_boundary's own mapping decision below: scope's
+        # resolved provider (from litellm) and this check can disagree for
+        # gateway-routed models, and it's this check -- not scope -- that
+        # decides whether Anthropic-style cache_control marking is applied.
+        cache_mapping = self.cache_breakpoint
+        if cache_mapping == "auto":
+            cache_mapping = "anthropic" if _is_anthropic_model(effective_model) else None
+        messages = replay_state.prepare_chat_messages(
+            messages, state_scope, anthropic_marking=cache_mapping == "anthropic"
+        )
 
         # Choose the stable-prefix breakpoint on projected provider messages.
         prepared_messages, _, _ = self._prepare_cache_boundary(
@@ -2432,10 +2450,16 @@ class ResponsesClient(UnifiedLLM):
                         cache_control,
                     )
                     content = "".join(block.get("text", "") for block in content)
+                # Same stability rationale as the input_text wrapping below -- a
+                # plain string here would render differently than its
+                # cache-marked list form once this tool result becomes history.
+                output = (
+                    [{"type": "input_text", "text": content}] if content else content
+                )
                 item = {
                     "type": "function_call_output",
                     "call_id": msg["tool_call_id"],
-                    "output": content,
+                    "output": output,
                 }
                 if cache_control:
                     # This is caller-owned mutable metadata, not retained native
@@ -2489,6 +2513,15 @@ class ResponsesClient(UnifiedLLM):
                 # encoded images). LLMResponse took the projection path above,
                 # so this does not copy its retained reasoning blobs.
                 item = copy.deepcopy(msg)
+                if isinstance(item.get("content"), str) and item.get("content"):
+                    # Always emit input_text/output_text blocks in list form so a
+                    # message's wire shape is stable whether or not it happens to
+                    # be the one apply_cache_policy marks with a cache breakpoint
+                    # this turn. A plain string would flip to a marked block on
+                    # the turn it's cached and back to a bare string the next
+                    # turn, breaking the provider's stable-prefix cache match.
+                    kind = "output_text" if item.get("role") == "assistant" else "input_text"
+                    item["content"] = [{"type": kind, "text": item["content"]}]
                 if isinstance(item.get("content"), list):
                     for block in item["content"]:
                         if block.get("type") == "text":

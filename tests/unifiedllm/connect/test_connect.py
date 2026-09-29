@@ -202,6 +202,9 @@ async def test_minimal_approval_posts_exact_plan_once(monkeypatch, style, suffix
     expected = deepcopy(proposal.probes[0].body)
     if style == "responses":
         expected["truncation"] = "disabled"
+        expected["input"][0]["content"] = [
+            {"type": "input_text", "text": expected["input"][0]["content"]}
+        ]
     elif style == "anthropic":
         expected["messages"][0]["content"] = [
             {"type": "text", "text": expected["messages"][0]["content"]}
