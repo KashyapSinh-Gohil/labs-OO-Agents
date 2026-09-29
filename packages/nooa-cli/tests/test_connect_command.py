@@ -1188,11 +1188,13 @@ def test_default_budget_covers_explicit_small_cap_and_every_level(tmp_path, monk
     assert result.exit_code == 0, result.output
     assert [
         body["reasoning_effort"] for body in bodies if "reasoning_effort" in body
-    ] == levels.split(",")
+    ] == [levels.split(",")[0], *levels.split(",")]
     # Two interfaces reach HTTP; the runtime rejects the third before sending.
-    # Routing is rechecked at the configured cap; tools and all six levels run.
+    # check_interfaces also probes the first level (max) per interface, cheaply,
+    # to recommend which interface actually surfaces reasoning. Routing is then
+    # rechecked at the configured cap; tools and all six levels run for real.
     # The session seed is also attempted; this minimal mock lacks a finish reason.
-    assert len(bodies) == 11
+    assert len(bodies) == 12
     entry = yaml.safe_load(path.read_text())["models"]["local"]
     assert "provenance" not in entry  # outcomes were checked on the wire; see bodies
 

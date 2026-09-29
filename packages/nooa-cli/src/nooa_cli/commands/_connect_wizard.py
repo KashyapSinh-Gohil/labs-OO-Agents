@@ -376,6 +376,13 @@ def check_interfaces(state: WizardState) -> bool:
             retry_styles = ("chat", "responses", "anthropic")
             interface_timeout = 30
             while True:
+                # If the user already gave us a reasoning template and levels,
+                # test reasoning per interface too -- not just connectivity --
+                # so the recommended default is the interface that actually
+                # surfaces reasoning, not merely the first one that answers.
+                reasoning_level = state.reasoning_level or (
+                    state.levels.split(",")[0].strip() if state.levels else "medium"
+                )
                 state.interfaces = asyncio.run(
                     show_checks(
                         connect.check_interfaces(
@@ -388,6 +395,12 @@ def check_interfaces(state: WizardState) -> bool:
                             api_key=state.api_key,
                             styles=retry_styles,
                             timeout_seconds=interface_timeout,
+                            reasoning_template=state.reasoning_template,
+                            reasoning_level=reasoning_level,
+                            reasoning_output_tokens=(
+                                state.reasoning_output_tokens
+                                or connect.DEFAULT_REASONING_OUTPUT_TOKENS
+                            ),
                         ),
                         summary=False,
                     )
@@ -398,6 +411,8 @@ def check_interfaces(state: WizardState) -> bool:
                 )
                 available = state.interfaces.accepted
                 if available:
+                    if state.interfaces.recommended_style in available:
+                        state.default_style = state.interfaces.recommended_style
                     break
                 failed_checks = {
                     style: r.entry["provenance"]["probes"]["routing"]
@@ -517,6 +532,12 @@ def check_interfaces(state: WizardState) -> bool:
             click.echo(
                 "Interfaces that returned the expected response format: " + ", ".join(available)
             )
+            if state.reasoning_template and any(state.interfaces.reasoning_observed.values()):
+                observed = [s for s in available if state.interfaces.reasoning_observed.get(s)]
+                click.echo(
+                    "Interfaces that actually returned reasoning: "
+                    + (", ".join(observed) if observed else "none")
+                )
         if state.interfaces and len(available) == 1:
             state.api_style = available[0]
             click.echo(f"Using {state.api_style} for {state.model}.")

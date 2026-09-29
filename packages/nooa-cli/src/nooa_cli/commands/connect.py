@@ -93,9 +93,11 @@ from ._connect_stages import STAGES
 )
 @click.option(
     "--reasoning-level",
-    default="medium",
-    show_default=True,
-    help="Effort/label probed when --stage interfaces also checks for reasoning.",
+    default=None,
+    help=(
+        "Effort/label probed when interfaces are also checked for reasoning. "
+        "Defaults to the first --levels entry, or 'medium'."
+    ),
 )
 @click.option(
     "--max-tokens",

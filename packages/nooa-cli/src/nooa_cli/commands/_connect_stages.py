@@ -212,7 +212,7 @@ def run_stage(
                         output_tokens=output_tokens,
                         api_key=key,
                         reasoning_template=reasoning_template,
-                        reasoning_level=reasoning_level,
+                        reasoning_level=reasoning_level or "medium",
                         reasoning_output_tokens=reasoning_output_tokens,
                     ):
                         if isinstance(event, connect.InterfaceResult):
