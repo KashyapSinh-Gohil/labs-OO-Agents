@@ -1085,10 +1085,22 @@ class TokenCalibration:
 _token_calibration = TokenCalibration()
 
 
+def _wrapped_block_text(value: Any) -> str | None:
+    """Join text from a list of input_text/output_text/text blocks, if any."""
+    if not isinstance(value, list):
+        return None
+    texts = [
+        block["text"]
+        for block in value
+        if isinstance(block, dict) and isinstance(block.get("text"), str)
+    ]
+    return "\n".join(texts) if texts else None
+
+
 def _token_counter_messages(
     messages: list[dict[str, Any] | LLMResponse | CacheBoundary],
 ) -> list[Any]:
-    """Retag Responses-only content-block types for litellm.token_counter.
+    """Build a calibration-only view litellm.token_counter can actually count.
 
     litellm's token_counter only recognizes text/image_url/tool_use/
     tool_result/thinking/tool_reference block types and raises on
@@ -1097,10 +1109,21 @@ def _token_counter_messages(
     per-message fallback below and silently drop that content from the
     estimate -- collapsing it toward zero and inflating the calibration
     ratio by whatever multiple was missed.
+
+    A native function_call_output item's wrapped `output` (see
+    _transform_messages) is invisible to token_counter entirely -- confirmed
+    against the real counter, a short and a very long tool result count
+    identically -- so it never raises and never falls back to the
+    per-message loop either; the text is just silently worth zero tokens.
+    Representing it as an ordinary role/content message gives it the same
+    real chat-template accounting every other message gets.
     """
     view = []
     for msg in messages:
-        content = msg.get("content") if isinstance(msg, dict) else None
+        if not isinstance(msg, dict):
+            view.append(msg)
+            continue
+        content = msg.get("content")
         if isinstance(content, list):
             msg = {
                 **msg,
@@ -1112,6 +1135,12 @@ def _token_counter_messages(
                     for block in content
                 ],
             }
+        elif msg.get("type") == "function_call_output":
+            text = _wrapped_block_text(msg.get("output"))
+            if text is None and isinstance(msg.get("output"), str):
+                text = msg["output"]
+            if text:
+                msg = {"role": "tool", "content": text}
         view.append(msg)
     return view
 
@@ -2280,8 +2309,11 @@ class ResponsesClient(UnifiedLLM):
         effective_model = self._effective_model(call_config)
         self._validate_cache_breakpoint_model(effective_model)
         state_scope = replay_state.replay_scope(effective_model, "responses", call_config)
+        native_encrypted_reasoning = replay_state.native_encrypted_reasoning_expected(
+            call_config, state_scope
+        )
         input_messages, instructions, openai_explicit = self._prepare_input(
-            messages, state_scope, effective_model
+            messages, state_scope, effective_model, native_encrypted_reasoning
         )
 
         api_params = {
@@ -2307,7 +2339,9 @@ class ResponsesClient(UnifiedLLM):
         if output_model is not None:
             api_params.update(_responses_output_params(output_model))
 
-        replay_state.add_encrypted_reasoning_include(api_params, state_scope)
+        replay_state.add_encrypted_reasoning_include(
+            api_params, state_scope, native_encrypted_reasoning=native_encrypted_reasoning
+        )
 
         http_client = self._http
         assert http_client is not None
@@ -2335,7 +2369,9 @@ class ResponsesClient(UnifiedLLM):
                 instructions=api_params.get("instructions"),
             )
 
-        return self._response_from_output(raw_response, state_scope, usage, output_model)
+        return self._response_from_output(
+            raw_response, state_scope, usage, output_model, native_encrypted_reasoning
+        )
 
     async def acall(
         self,
@@ -2355,8 +2391,11 @@ class ResponsesClient(UnifiedLLM):
         effective_model = self._effective_model(call_config)
         self._validate_cache_breakpoint_model(effective_model)
         state_scope = replay_state.replay_scope(effective_model, "responses", call_config)
+        native_encrypted_reasoning = replay_state.native_encrypted_reasoning_expected(
+            call_config, state_scope
+        )
         input_messages, instructions, openai_explicit = self._prepare_input(
-            messages, state_scope, effective_model
+            messages, state_scope, effective_model, native_encrypted_reasoning
         )
 
         api_params = {
@@ -2382,7 +2421,9 @@ class ResponsesClient(UnifiedLLM):
         if output_model is not None:
             api_params.update(_responses_output_params(output_model))
 
-        replay_state.add_encrypted_reasoning_include(api_params, state_scope)
+        replay_state.add_encrypted_reasoning_include(
+            api_params, state_scope, native_encrypted_reasoning=native_encrypted_reasoning
+        )
 
         http_client = self._http
         assert http_client is not None
@@ -2410,17 +2451,25 @@ class ResponsesClient(UnifiedLLM):
                 instructions=api_params.get("instructions"),
             )
 
-        return self._response_from_output(raw_response, state_scope, usage, output_model)
+        return self._response_from_output(
+            raw_response, state_scope, usage, output_model, native_encrypted_reasoning
+        )
 
-    def _prepare_input(self, messages, state_scope, model):
+    def _prepare_input(self, messages, state_scope, model, native_encrypted_reasoning=False):
         """Choose cache markers only after canonical turn projection."""
-        input_messages, instructions = self._transform_messages(messages, state_scope)
+        input_messages, instructions = self._transform_messages(
+            messages, state_scope, native_encrypted_reasoning
+        )
         return self._prepare_cache_boundary(
             input_messages, responses=True, model=model, instructions=instructions
         )
 
-    def _response_from_output(self, raw_response, scope, usage, output_model):
-        parts = response_parts.capture_parts(raw_response.output, scope)
+    def _response_from_output(
+        self, raw_response, scope, usage, output_model, native_encrypted_reasoning=False
+    ):
+        parts = response_parts.capture_parts(
+            raw_response.output, scope, native_encrypted_reasoning=native_encrypted_reasoning
+        )
         response = LLMResponse(
             raw_response=raw_response,
             parts=parts,
@@ -2440,6 +2489,7 @@ class ResponsesClient(UnifiedLLM):
         self,
         messages: list[dict[str, Any] | LLMResponse | CacheBoundary],
         state_scope: str | None = None,
+        native_encrypted_reasoning: bool = False,
     ) -> tuple[list[dict[str, Any] | CacheBoundary], str | None]:
         """Expand turns at dispatch; only leading system messages become instructions."""
         instructions: list[str] = []
@@ -2451,7 +2501,13 @@ class ResponsesClient(UnifiedLLM):
             # Moving a later system message to instructions would reorder history.
             leading_system = leading_system and original.get("role") == "system"
             if isinstance(original, LLMResponse):
-                transformed.extend(response_parts.project_turn(original, state_scope))
+                transformed.extend(
+                    response_parts.project_turn(
+                        original,
+                        state_scope,
+                        native_encrypted_reasoning=native_encrypted_reasoning,
+                    )
+                )
                 continue
             if isinstance(original, CacheBoundary):
                 transformed.append(original)

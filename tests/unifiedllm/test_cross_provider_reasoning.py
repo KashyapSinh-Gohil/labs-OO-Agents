@@ -280,7 +280,16 @@ RESPONSES_MESSAGE = {
 @pytest.mark.asyncio
 @pytest.mark.parametrize("is_async", [False, True])
 @pytest.mark.parametrize("has_answer", [False, True])
-async def test_summary_without_encrypted_content_is_portable_text(is_async, has_answer) -> None:
+async def test_summary_without_encrypted_content_is_native_on_gateway_routes(
+    is_async, has_answer
+) -> None:
+    """LiteLLM resolves every OpenAI-compatible gateway route (not
+    api.openai.com or an Azure OpenAI resource) to the same provider name a
+    genuinely native route gets, so provider name alone can't identify these.
+    The endpoint can: such a route never gets a real encrypted envelope back,
+    so its summary-only reasoning item is native, non-truncated state, not an
+    incomplete OpenAI turn -- unlike on a real OpenAI/Azure endpoint (see
+    test_summary_without_encrypted_content_is_portable_on_native_openai)."""
     summary = {
         key: value for key, value in RESPONSES_REASONING.items() if key != "encrypted_content"
     }
@@ -299,6 +308,45 @@ async def test_summary_without_encrypted_content_is_portable_text(is_async, has_
             messages = [{"role": "user", "content": "think"}]
             first = await client.acall(messages) if is_async else client.call(messages)
         assert request.call_args.kwargs.get("include") is None
+        assert first.reasoning == "Check the evidence."
+        assert any(part.native is not None for part in first.parts)
+        assert first.replay_scope is not None
+        restored = LLMResponse.model_validate_json(first.model_dump_json())
+        with patch(target, return_value=raw) as replay:
+            rendered = _render(restored)
+            if is_async:
+                await client.acall(rendered)
+            else:
+                client.call(rendered)
+        expected = [summary, RESPONSES_MESSAGE] if has_answer else [summary]
+        assert replay.call_args.kwargs["input"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [False, True])
+@pytest.mark.parametrize("has_answer", [False, True])
+async def test_summary_without_encrypted_content_is_portable_on_native_openai(
+    is_async, has_answer
+) -> None:
+    """A genuinely native OpenAI endpoint always requests and expects a real
+    encrypted envelope; a summary-only item there is a truncated/incomplete
+    turn, so it still demotes to portable text."""
+    summary = {
+        key: value for key, value in RESPONSES_REASONING.items() if key != "encrypted_content"
+    }
+    raw = ResponsesAPIResponse(
+        id="resp",
+        created_at=0,
+        model="gpt-5.6",
+        status="completed",
+        output=[summary, RESPONSES_MESSAGE] if has_answer else [summary],
+    )
+    async with ResponsesClient(model="openai/gpt-5.6", api_key="test") as client:
+        target = "litellm.aresponses" if is_async else "litellm.responses"
+        with patch(target, return_value=raw) as request:
+            messages = [{"role": "user", "content": "think"}]
+            first = await client.acall(messages) if is_async else client.call(messages)
+        assert "reasoning.encrypted_content" in request.call_args.kwargs.get("include", [])
         assert first.reasoning == "Check the evidence."
         assert all(part.native is None for part in first.parts)
         restored = LLMResponse.model_validate_json(first.model_dump_json())

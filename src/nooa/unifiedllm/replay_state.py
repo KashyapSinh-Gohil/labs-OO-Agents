@@ -355,7 +355,28 @@ def prepare_chat_messages(
     return prepared
 
 
-def add_encrypted_reasoning_include(api_params: dict[str, Any], scope: str | None) -> None:
+def native_encrypted_reasoning_expected(api_params: dict[str, Any], scope: str | None) -> bool:
+    """Whether this call's route can return real ``reasoning.encrypted_content``.
+
+    LiteLLM's provider resolution collapses every OpenAI-compatible gateway
+    route (Hub-proxied open-weight models included) to the same provider name
+    ("openai") that a genuine OpenAI/Azure call resolves to, so provider name
+    alone cannot tell them apart -- both read as ``responses:openai:...`` or
+    ``responses:azure:...`` in ``scope``. The actual endpoint can: only calls
+    that really reach ``api.openai.com`` or an Azure OpenAI resource ever get
+    an encrypted envelope back. Everything else that exposes reasoning does so
+    as summary text only, as its native (not truncated) wire shape.
+    """
+    if scope and scope.startswith("responses:azure:"):
+        return True
+    return bool(
+        scope and scope.startswith("responses:openai:") and _uses_native_openai_endpoint(api_params)
+    )
+
+
+def add_encrypted_reasoning_include(
+    api_params: dict[str, Any], scope: str | None, *, native_encrypted_reasoning: bool
+) -> None:
     """Request OpenAI encrypted reasoning only on endpoints known to support it."""
     configured = api_params.get("include")
     if isinstance(configured, (list, tuple, set)) and not configured:
@@ -367,11 +388,7 @@ def add_encrypted_reasoning_include(api_params: dict[str, Any], scope: str | Non
     if _ENCRYPTED_REASONING_INCLUDE in include:
         api_params["include"] = include
         return
-    if scope and scope.startswith("responses:azure:"):
-        include.append(_ENCRYPTED_REASONING_INCLUDE)
-    elif (
-        scope and scope.startswith("responses:openai:") and _uses_native_openai_endpoint(api_params)
-    ):
+    if native_encrypted_reasoning:
         include.append(_ENCRYPTED_REASONING_INCLUDE)
     if include:
         api_params["include"] = include

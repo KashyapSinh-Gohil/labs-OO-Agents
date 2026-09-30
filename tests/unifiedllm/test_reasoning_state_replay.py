@@ -587,15 +587,22 @@ async def test_async_responses_capture_matches_sync() -> None:
 
 
 def test_mixed_summary_only_turn_drops_all_native_authority(caplog):
+    """On a genuinely native OpenAI/Azure route, a summary-only reasoning item
+    beside an encrypted one is still an incomplete provider turn -- unlike on
+    a gateway route that never returns encrypted_content at all (see
+    test_summary_without_encrypted_content_is_native_on_gateway_routes)."""
     from nooa.unifiedllm.response_parts import capture_parts, project_turn
 
     scope = replay_scope("openai/gpt-5.6", "responses", {})
     summary = {"type": "reasoning", "summary": [{"type": "summary_text", "text": "why"}]}
     turn = LLMResponse(
-        parts=capture_parts([REASONING, summary, MESSAGE], scope), replay_scope=scope
+        parts=capture_parts(
+            [REASONING, summary, MESSAGE], scope, native_encrypted_reasoning=True
+        ),
+        replay_scope=scope,
     )
     assert all(part.native is None for part in turn.parts)
-    assert project_turn(turn, scope) == [
+    assert project_turn(turn, scope, native_encrypted_reasoning=True) == [
         {"role": "assistant", "content": "why"},
         {"role": "assistant", "content": "done"},
     ]
