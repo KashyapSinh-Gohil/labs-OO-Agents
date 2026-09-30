@@ -126,3 +126,43 @@ def test_calibration_survives_input_text_wrapped_content(monkeypatch):
     )
     ratio = calibration.ratio("gpt-5.6")
     assert 0.3 <= ratio <= 5.0, f"calibration ratio blew up to {ratio}; estimate likely collapsed"
+
+
+def test_calibration_counts_wrapped_tool_output_text():
+    """litellm.token_counter silently ignores function_call_output.output
+    text entirely (confirmed against the real, unmocked counter: a
+    2000-word tool result counts identically to a 2-word one), so large
+    tool results were invisible to the estimate -- collapsing it and
+    inflating the calibration ratio for any tool-heavy conversation.
+    _token_counter_messages must give that text a countable representation.
+    """
+    import litellm
+
+    from nooa.unifiedllm import unifiedllm as implementation
+
+    short = [
+        {"role": "user", "content": "hi"},
+        {
+            "type": "function_call_output",
+            "call_id": "c1",
+            "output": [{"type": "input_text", "text": "ok"}],
+        },
+    ]
+    long = [
+        {"role": "user", "content": "hi"},
+        {
+            "type": "function_call_output",
+            "call_id": "c1",
+            "output": [{"type": "input_text", "text": "result data. " * 500}],
+        },
+    ]
+    short_count = litellm.token_counter(
+        model="gpt-5.6", messages=implementation._token_counter_messages(short)
+    )
+    long_count = litellm.token_counter(
+        model="gpt-5.6", messages=implementation._token_counter_messages(long)
+    )
+    assert long_count > short_count + 500, (
+        f"tool-output text change ({short_count} -> {long_count}) barely moved the "
+        "estimate; function_call_output.output text is still not being counted"
+    )
