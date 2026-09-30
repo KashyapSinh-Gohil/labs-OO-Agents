@@ -322,6 +322,27 @@ async def test_summary_without_encrypted_content_is_native_on_gateway_routes(
         assert replay.call_args.kwargs["input"] == expected
 
 
+@pytest.mark.parametrize(
+    ("api_base", "base_url", "expected"),
+    [
+        ("https://gateway.example/v1", "https://api.openai.com/v1", True),
+        ("https://api.openai.com/v1", "https://gateway.example/v1", False),
+    ],
+)
+def test_native_endpoint_check_matches_dispatchs_own_base_url_precedence(
+    api_base, base_url, expected
+) -> None:
+    """Dispatch always lets a per-call base_url win over an inherited api_base
+    (it pops base_url into api_base right before the request). The endpoint
+    check that decides native_encrypted_reasoning must use the same
+    precedence, or a client with a gateway api_base whose call overrides
+    base_url to real OpenAI (or the reverse) gets a decision that disagrees
+    with where the request actually goes."""
+    from nooa.unifiedllm.replay_state import _uses_native_openai_endpoint
+
+    assert _uses_native_openai_endpoint({"api_base": api_base, "base_url": base_url}) is expected
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("is_async", [False, True])
 @pytest.mark.parametrize("has_answer", [False, True])

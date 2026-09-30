@@ -1613,7 +1613,7 @@ async def check_interfaces(
     api_base: str,
     api_key_env: str,
     *,
-    budget_tokens: int = 4096,
+    budget_tokens: int = DEFAULT_CHECK_BUDGET,
     output_tokens: int = 200,
     api_key: str | None = None,
     styles: tuple[str, ...] = ("chat", "responses", "anthropic"),

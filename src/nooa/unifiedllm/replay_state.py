@@ -102,9 +102,13 @@ def _normalized_endpoint(value: Any) -> str:
 
 
 def _uses_native_openai_endpoint(api_params: dict[str, Any]) -> bool:
+    # Dispatch always lets a per-call base_url win over an inherited api_base
+    # (it pops base_url into api_base right before the request); check the
+    # same precedence here or this can disagree with where the call actually
+    # goes for a client whose api_base and a call's base_url differ.
     endpoint = (
-        api_params.get("api_base")
-        or api_params.get("base_url")
+        api_params.get("base_url")
+        or api_params.get("api_base")
         or getattr(litellm, "api_base", None)
         or os.getenv("OPENAI_BASE_URL")
         or os.getenv("OPENAI_API_BASE")
