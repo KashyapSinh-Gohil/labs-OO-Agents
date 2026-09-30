@@ -12,6 +12,10 @@ from . import REASONING_CHECK_PROMPT
 REPLY_CAP = 2048
 # Includes padding, schema/instructions, and up to two prior reply-sized items.
 TOKEN_RESERVATION = 3 * (8192 + 3 * REPLY_CAP)
+# Module-level so tests can monkeypatch it to 0 -- these three calls land back
+# to back on the same endpoint in production; spurious 5xx/rate-limit
+# failures are common enough there to be worth a short, fixed pace-out.
+SESSION_CALL_PACING_SECONDS = 0.5
 
 
 def reply_budget(entry, budget_tokens):
@@ -345,6 +349,8 @@ async def session_steps(alias, entry, *, api_key, budget_tokens):
             attempts = []
             before = len(bodies)
             spent += reservation
+            if index > 0 and SESSION_CALL_PACING_SECONDS:
+                await asyncio.sleep(SESSION_CALL_PACING_SECONDS)
             try:
                 async with asyncio.timeout(120):
                     response = await client.acall(call_messages, **params)
@@ -367,10 +373,11 @@ async def session_steps(alias, entry, *, api_key, budget_tokens):
             usage = response.usage
             total = usage.input_tokens + usage.output_tokens if usage else 0
             spent += max(0, total - reservation)
-            observed = bool(
-                any(p.kind == "reasoning" for p in response.parts)
-                or (usage and usage.reasoning_tokens)
-            )
+            # Billed usage.reasoning_tokens alone is not evidence -- confirmed
+            # live, Kimi/Qwen bill nonzero reasoning tokens on routes that
+            # never put a reasoning item on the wire, so there is nothing for
+            # capture_parts to attach and parts stays empty.
+            observed = any(p.kind == "reasoning" for p in response.parts)
             record = {
                 "outcome": "accepted",
                 "reasoning_observed": observed,

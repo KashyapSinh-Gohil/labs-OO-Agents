@@ -190,7 +190,9 @@ def test_wizard_retries_only_selected_interface_at_120_seconds(tmp_path, monkeyp
         input="y\nmodel\nlonger\nchat\ny\n",
     )
     assert result.exit_code == 0, result.output
-    assert len(posts) == 5  # Configured-cap routing is distinct from interface discovery.
+    # Configured-cap routing is distinct from interface discovery;
+    # check_interfaces now also probes reasoning by default for chat.
+    assert len(posts) == 6
     assert result.output.count("Approve API checks") == 1
     assert result.output.count("Results ·") == 1
     assert "route may be slow" in result.output

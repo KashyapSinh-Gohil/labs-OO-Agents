@@ -336,9 +336,10 @@ def test_enabled_reasoning_without_evidence_warns_once_before_save(
     )
     assert result.exit_code == 0, result.output
     warning = "Warning: no reasoning information was returned for: high."
-    assert result.output.count(warning) == (
-        1 if mode == "missing" or (mode == "usage" and style == "anthropic") else 0
-    )
+    # Billed reasoning_tokens alone (mode "usage") is no longer treated as
+    # evidence for any style -- confirmed live, Kimi/Qwen bill reasoning
+    # tokens on routes that never put a reasoning item on the wire at all.
+    assert result.output.count(warning) == (1 if mode in {"missing", "usage"} else 0)
     assert "returned for: none" not in result.output
     assert "private reasoning" not in result.output
     assert len(sent) == (0 if mode == "unprobed" else 5 if mode == "rejected" else 7)
@@ -776,8 +777,9 @@ def test_bare_command_walks_through_setup_and_checks_inline(tmp_path, monkeypatc
     assert result.exit_code == 0, result.output
     # An unset --budget-tokens is now unlimited, so every check that would
     # previously have been skipped by the old 131072-token default budget
-    # now actually runs (3 more than before).
-    assert [r.method for r in requests] == ["GET"] + ["POST"] * 8
+    # now actually runs (3 more than before). check_interfaces now also
+    # probes reasoning by default for the one accepted (chat) interface.
+    assert [r.method for r in requests] == ["GET"] + ["POST"] * 9
     entry = yaml.safe_load((tmp_path / "llm_config.yaml").read_text())["models"]["my-model"]
     assert entry["model_name"] == "openai/example-model"
     assert "temporary-secret" not in result.output + yaml.safe_dump(entry)
@@ -907,7 +909,9 @@ def test_authentication_recovery_keeps_budget_and_secrets(tmp_path, monkeypatch,
     assert "skills/nooa-model-configuration/SKILL.md" in handoff
     assert "git clone" not in handoff
     assert litellm.suppress_debug_info is False
-    assert len(sent) == (7 if recover else 3)
+    # check_interfaces now also probes reasoning by default for the one
+    # accepted (chat) interface once recovery succeeds.
+    assert len(sent) == (8 if recover else 3)
     if recover:
         entry = yaml.safe_load(path.read_text())["models"]["local"]
         assert entry["api_key_env"] == "CONNECT_GOOD"

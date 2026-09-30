@@ -1384,7 +1384,12 @@ async def run_steps(
             # Check for the part's presence directly, matching how session
             # checks in _session.py already detect it.
             reasoning_parts = [part for part in response.parts if part.kind == "reasoning"]
-            reasoning = bool(reasoning_parts or (usage and usage.reasoning_tokens))
+            # Confirmed live: Kimi/Qwen bill nonzero usage.reasoning_tokens on
+            # routes that never put a reasoning item on the wire at all --
+            # capture_parts has nothing to attach, so parts stays empty. Billed
+            # tokens alone are not evidence; only a captured part is (visible
+            # text or not, per the empty-text Claude case above).
+            reasoning = bool(reasoning_parts)
             # Anthropic withholds the visible thinking text in (at least) two
             # distinct wire shapes, both preserved on .native by chat_parts.py:
             # a genuine redacted_thinking block (opaque "data" blob, no text

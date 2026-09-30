@@ -376,10 +376,13 @@ def check_interfaces(state: WizardState) -> bool:
             retry_styles = ("chat", "responses", "anthropic")
             interface_timeout = 30
             while True:
-                # If the user already gave us a reasoning template and levels,
-                # test reasoning per interface too -- not just connectivity --
-                # so the recommended default is the interface that actually
-                # surfaces reasoning, not merely the first one that answers.
+                # Always test reasoning per interface, not just connectivity --
+                # "nooa connect" with no arguments should run the best check we
+                # have by default, not require the caller to already know to
+                # ask for it. If the user gave us their own --reasoning-template
+                # (e.g. for an Anthropic-only setup), that shape wins; "effort"
+                # is a reasonable default elsewhere, understood by chat and
+                # responses (and harmless if a style ignores/rejects it).
                 reasoning_level = state.reasoning_level or (
                     state.levels.split(",")[0].strip() if state.levels else "medium"
                 )
@@ -395,7 +398,7 @@ def check_interfaces(state: WizardState) -> bool:
                             api_key=state.api_key,
                             styles=retry_styles,
                             timeout_seconds=interface_timeout,
-                            reasoning_template=state.reasoning_template,
+                            reasoning_template=state.reasoning_template or "effort",
                             reasoning_level=reasoning_level,
                             reasoning_output_tokens=(
                                 state.reasoning_output_tokens
@@ -532,20 +535,22 @@ def check_interfaces(state: WizardState) -> bool:
             click.echo(
                 "Interfaces that returned the expected response format: " + ", ".join(available)
             )
-            if state.reasoning_template and any(state.interfaces.reasoning_observed.values()):
-                observed = [s for s in available if state.interfaces.reasoning_observed.get(s)]
-                click.echo(
-                    "Interfaces that actually returned reasoning: "
-                    + (", ".join(observed) if observed else "none")
-                )
+            observed = [s for s in available if state.interfaces.reasoning_observed.get(s)]
+            click.echo(
+                "Interfaces that actually returned reasoning: "
+                + (", ".join(observed) if observed else "none")
+            )
         if state.interfaces and len(available) == 1:
             state.api_style = available[0]
             click.echo(f"Using {state.api_style} for {state.model}.")
         else:
             click.echo(f"Choose the request interface for {state.model}:")
-            click.echo(
-                "chat = OpenAI-compatible; responses = OpenAI Responses; anthropic = Anthropic Messages."
-            )
+            legend = {
+                "chat": "chat = OpenAI-compatible",
+                "responses": "responses = OpenAI Responses",
+                "anthropic": "anthropic = Anthropic Messages",
+            }
+            click.echo("; ".join(legend[style] for style in available) + ".")
             state.api_style = prompts.prompt(
                 "API format",
                 choices=available,
