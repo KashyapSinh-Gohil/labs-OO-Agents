@@ -343,6 +343,18 @@ def test_native_endpoint_check_matches_dispatchs_own_base_url_precedence(
     assert _uses_native_openai_endpoint({"api_base": api_base, "base_url": base_url}) is expected
 
 
+def test_replay_scope_resolves_the_same_endpoint_precedence() -> None:
+    """replay_scope independently re-derived "configured_endpoint" with the
+    opposite precedence (api_base before base_url) from
+    _uses_native_openai_endpoint's -- both now share _configured_endpoint, so
+    provider resolution is based on the same endpoint dispatch actually
+    reaches, not a different one picked by a second, inconsistent copy."""
+    from nooa.unifiedllm.replay_state import _configured_endpoint
+
+    params = {"api_base": "https://gateway.example/v1", "base_url": "https://api.openai.com/v1"}
+    assert _configured_endpoint(params) == "https://api.openai.com/v1"
+
+
 def test_summary_only_reasoning_degrades_gracefully_on_a_now_stricter_route() -> None:
     """A turn captured on a gateway route (native_encrypted_reasoning=False)
     stores summary-only reasoning as native state. If the same stored turn is

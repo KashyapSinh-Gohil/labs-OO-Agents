@@ -11,6 +11,7 @@ from typing import Any
 
 from nooa._immutable_json import json_containers
 from nooa.llm_types import AssistantPart, AssistantReasoning, AssistantText, LLMResponse, ToolCall
+from nooa.unifiedllm.cache_policy import wrap_anthropic_text
 
 from .replay_state import (
     ReasoningReplayError,
@@ -250,9 +251,7 @@ def project_chat_turn(
         # this turn is the one apply_cache_policy marks. anthropic_cache_marking is
         # the actual marking decision, not scope's resolved provider -- see
         # prepare_chat_messages for why those can disagree.
-        message["content"] = (
-            [{"type": "text", "text": joined}] if anthropic_cache_marking else joined
-        )
+        message["content"] = [wrap_anthropic_text(joined)] if anthropic_cache_marking else joined
     elif message.get("tool_calls"):
         message["content"] = None
     return message, call_ids

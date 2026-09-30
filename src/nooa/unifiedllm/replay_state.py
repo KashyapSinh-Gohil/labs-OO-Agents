@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 import litellm
 
 from nooa.llm_types import CacheBoundary, LLMResponse
-from nooa.unifiedllm.cache_policy import reject_boundary_dict
+from nooa.unifiedllm.cache_policy import reject_boundary_dict, wrap_anthropic_text
 from nooa.unifiedllm.errors import ReasoningReplayError
 
 logger = logging.getLogger(__name__)
@@ -101,14 +101,21 @@ def _normalized_endpoint(value: Any) -> str:
     return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}{path}{query}"
 
 
+def _configured_endpoint(params: dict[str, Any]) -> str | None:
+    """The endpoint this call's own configuration points at, if any.
+
+    Dispatch always lets a per-call ``base_url`` win over an inherited
+    ``api_base`` (it pops ``base_url`` into ``api_base`` right before the
+    request); every reader of these two keys must agree with that precedence
+    or it can disagree with where the call actually goes for a client whose
+    ``api_base`` and a call's ``base_url`` differ.
+    """
+    return params.get("base_url") or params.get("api_base")
+
+
 def _uses_native_openai_endpoint(api_params: dict[str, Any]) -> bool:
-    # Dispatch always lets a per-call base_url win over an inherited api_base
-    # (it pops base_url into api_base right before the request); check the
-    # same precedence here or this can disagree with where the call actually
-    # goes for a client whose api_base and a call's base_url differ.
     endpoint = (
-        api_params.get("base_url")
-        or api_params.get("api_base")
+        _configured_endpoint(api_params)
         or getattr(litellm, "api_base", None)
         or os.getenv("OPENAI_BASE_URL")
         or os.getenv("OPENAI_API_BASE")
@@ -129,7 +136,7 @@ def replay_scope(
     do not change the provider wire format, so gateway or credential changes
     must not silently disable capture or replay.
     """
-    configured_endpoint = params.get("api_base") or params.get("base_url")
+    configured_endpoint = _configured_endpoint(params)
     try:
         resolved_model, provider, _, _ = litellm.get_llm_provider(
             model=model,
@@ -351,7 +358,7 @@ def prepare_chat_messages(
             # genuinely empty string alone.
             content = message["content"]
             if content:
-                message["content"] = [{"type": "text", "text": content}]
+                message["content"] = [wrap_anthropic_text(content)]
         call_id = message.get("tool_call_id")
         if isinstance(call_id, str):
             message["tool_call_id"] = private_call_ids.get(call_id, call_id)

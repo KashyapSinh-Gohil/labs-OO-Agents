@@ -31,6 +31,7 @@ from nooa.unifiedllm.cache_policy import (
     enable_openai_explicit_cache,
     reject_boundary_dict,
     reject_legacy_cache_config,
+    wrap_responses_text,
 )
 
 from . import replay_state, response_parts
@@ -2558,7 +2559,7 @@ class ResponsesClient(UnifiedLLM):
                 # than its cache-marked list form once this tool result
                 # becomes history; apply_cache_policy's marker wraps a string
                 # unconditionally, so this must too.
-                output = [{"type": "input_text", "text": content}]
+                output = [wrap_responses_text(content)]
                 item = {
                     "type": "function_call_output",
                     "call_id": msg["tool_call_id"],
@@ -2626,7 +2627,7 @@ class ResponsesClient(UnifiedLLM):
                     # stable-prefix cache match -- apply_cache_policy's marker
                     # wraps a string unconditionally, so this must too.
                     kind = "output_text" if item.get("role") == "assistant" else "input_text"
-                    item["content"] = [{"type": kind, "text": item["content"]}]
+                    item["content"] = [wrap_responses_text(item["content"], kind)]
                 if isinstance(item.get("content"), list):
                     for block in item["content"]:
                         if block.get("type") == "text":
@@ -2651,7 +2652,7 @@ class ResponsesClient(UnifiedLLM):
                     # generic path unwrapped, so it still flipped shape
                     # (including "", per apply_cache_policy's unconditional
                     # string wrap) whenever apply_cache_policy marked it.
-                    item["output"] = [{"type": "input_text", "text": item["output"]}]
+                    item["output"] = [wrap_responses_text(item["output"])]
                 transformed.append(item)
         return transformed, "\n\n".join(instructions) or None
 
