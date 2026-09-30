@@ -596,9 +596,7 @@ def test_mixed_summary_only_turn_drops_all_native_authority(caplog):
     scope = replay_scope("openai/gpt-5.6", "responses", {})
     summary = {"type": "reasoning", "summary": [{"type": "summary_text", "text": "why"}]}
     turn = LLMResponse(
-        parts=capture_parts(
-            [REASONING, summary, MESSAGE], scope, native_encrypted_reasoning=True
-        ),
+        parts=capture_parts([REASONING, summary, MESSAGE], scope, native_encrypted_reasoning=True),
         replay_scope=scope,
     )
     assert all(part.native is None for part in turn.parts)

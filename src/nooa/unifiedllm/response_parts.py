@@ -26,7 +26,9 @@ def _require_encrypted_reasoning(item: dict) -> None:
     _validate_native_reasoning(item, require_encrypted=True)
 
 
-def _validate_native_reasoning(item: dict, *, require_encrypted: bool, has_text: bool = True) -> None:
+def _validate_native_reasoning(
+    item: dict, *, require_encrypted: bool, has_text: bool = True
+) -> None:
     """Validate a native reasoning item, optionally requiring a real envelope.
 
     A present ``encrypted_content`` must always be a nonempty string. Whether
