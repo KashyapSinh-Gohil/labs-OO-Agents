@@ -222,6 +222,7 @@ def command(
                     "--provider": provider,
                     "--catalogue-model": catalogue_model,
                     "--reasoning-template": reasoning_template and stage != "interfaces",
+                    "--reasoning-level": reasoning_level and stage != "interfaces",
                     "--levels": levels,
                     "--show-config": show_config,
                     "--edit-model": edit_model is not None,

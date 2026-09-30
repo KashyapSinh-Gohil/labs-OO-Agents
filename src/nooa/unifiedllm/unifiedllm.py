@@ -1097,6 +1097,19 @@ def _wrapped_block_text(value: Any) -> str | None:
     return "\n".join(texts) if texts else None
 
 
+def _token_counter_block(block: Any) -> Any:
+    """Retag one Responses content block into a shape litellm's token_counter
+    recognizes (text/image_url/tool_use/tool_result/thinking/tool_reference).
+    Anything else (e.g. an already-portable block) passes through unchanged."""
+    if not isinstance(block, dict):
+        return block
+    if block.get("type") in {"input_text", "output_text"}:
+        return {**block, "type": "text"}
+    if block.get("type") == "input_image":
+        return {"type": "image_url", "image_url": block.get("image_url")}
+    return block
+
+
 def _token_counter_messages(
     messages: list[dict[str, Any] | LLMResponse | CacheBoundary],
 ) -> list[Any]:
@@ -1104,11 +1117,13 @@ def _token_counter_messages(
 
     litellm's token_counter only recognizes text/image_url/tool_use/
     tool_result/thinking/tool_reference block types and raises on
-    ResponsesClient's input_text/output_text blocks (see
+    ResponsesClient's input_text/output_text/input_image blocks (see
     _transform_messages), which would otherwise always fall through to the
     per-message fallback below and silently drop that content from the
     estimate -- collapsing it toward zero and inflating the calibration
-    ratio by whatever multiple was missed.
+    ratio by whatever multiple was missed. The fallback itself only sums
+    "text" blocks, so an image billed real tokens by the API still counted
+    as zero even after falling back.
 
     A native function_call_output item's wrapped `output` (see
     _transform_messages) is invisible to token_counter entirely -- confirmed
@@ -1127,13 +1142,7 @@ def _token_counter_messages(
         if isinstance(content, list):
             msg = {
                 **msg,
-                "content": [
-                    {**block, "type": "text"}
-                    if isinstance(block, dict)
-                    and block.get("type") in {"input_text", "output_text"}
-                    else block
-                    for block in content
-                ],
+                "content": [_token_counter_block(block) for block in content],
             }
         elif msg.get("type") == "function_call_output":
             text = _wrapped_block_text(msg.get("output"))
@@ -2544,10 +2553,12 @@ class ResponsesClient(UnifiedLLM):
                         cache_control,
                     )
                     content = "".join(block.get("text", "") for block in content)
-                # Same stability rationale as the input_text wrapping below -- a
-                # plain string here would render differently than its
-                # cache-marked list form once this tool result becomes history.
-                output = [{"type": "input_text", "text": content}] if content else content
+                # Same stability rationale as the input_text wrapping below --
+                # a plain string here (including "") would render differently
+                # than its cache-marked list form once this tool result
+                # becomes history; apply_cache_policy's marker wraps a string
+                # unconditionally, so this must too.
+                output = [{"type": "input_text", "text": content}]
                 item = {
                     "type": "function_call_output",
                     "call_id": msg["tool_call_id"],
@@ -2605,13 +2616,15 @@ class ResponsesClient(UnifiedLLM):
                 # encoded images). LLMResponse took the projection path above,
                 # so this does not copy its retained reasoning blobs.
                 item = copy.deepcopy(msg)
-                if isinstance(item.get("content"), str) and item.get("content"):
+                if isinstance(item.get("content"), str):
                     # Always emit input_text/output_text blocks in list form so a
                     # message's wire shape is stable whether or not it happens to
                     # be the one apply_cache_policy marks with a cache breakpoint
-                    # this turn. A plain string would flip to a marked block on
-                    # the turn it's cached and back to a bare string the next
-                    # turn, breaking the provider's stable-prefix cache match.
+                    # this turn. A plain string (including "") would flip to a
+                    # marked block on the turn it's cached and back to a bare
+                    # string the next turn, breaking the provider's
+                    # stable-prefix cache match -- apply_cache_policy's marker
+                    # wraps a string unconditionally, so this must too.
                     kind = "output_text" if item.get("role") == "assistant" else "input_text"
                     item["content"] = [{"type": kind, "text": item["content"]}]
                 if isinstance(item.get("content"), list):
@@ -2636,9 +2649,9 @@ class ResponsesClient(UnifiedLLM):
                     # branch above -- an already-native function_call_output
                     # (not converted from a role="tool" message) took this
                     # generic path unwrapped, so it still flipped shape
-                    # whenever apply_cache_policy marked it.
-                    if item["output"]:
-                        item["output"] = [{"type": "input_text", "text": item["output"]}]
+                    # (including "", per apply_cache_policy's unconditional
+                    # string wrap) whenever apply_cache_policy marked it.
+                    item["output"] = [{"type": "input_text", "text": item["output"]}]
                 transformed.append(item)
         return transformed, "\n\n".join(instructions) or None
 

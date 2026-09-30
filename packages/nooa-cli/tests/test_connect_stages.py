@@ -343,3 +343,13 @@ def test_reasoning_template_rejected_outside_interfaces_stage(monkeypatch):
     )
     assert result.exit_code == 2
     assert "--reasoning-template" in result.output
+
+
+def test_reasoning_level_rejected_outside_interfaces_stage(monkeypatch):
+    """--reasoning-level only means anything alongside --reasoning-template's
+    per-interface reasoning probe, same as --reasoning-template itself."""
+    monkeypatch.setenv("STAGE_TEST_KEY", "test-secret")
+    mock_http(monkeypatch, lambda request: pytest.fail("Rejected options must not send HTTP"))
+    result = CliRunner().invoke(command, [*BASE, "--stage", "routing", "--reasoning-level", "high"])
+    assert result.exit_code == 2
+    assert "--reasoning-level" in result.output

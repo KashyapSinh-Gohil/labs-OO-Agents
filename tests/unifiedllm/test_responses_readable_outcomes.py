@@ -166,3 +166,49 @@ def test_calibration_counts_wrapped_tool_output_text():
         f"tool-output text change ({short_count} -> {long_count}) barely moved the "
         "estimate; function_call_output.output text is still not being counted"
     )
+
+
+def test_calibration_counts_wrapped_input_image_blocks():
+    """litellm.token_counter raises on Responses' input_image block shape
+    (confirmed against the real, unmocked counter), which _update_token_
+    calibration's outer except then falls back to a per-message text sum
+    that skips non-"text" blocks entirely -- an image billed several hundred
+    tokens by the real API silently contributes 0 to the estimate.
+    _token_counter_messages must give it a countable representation.
+    """
+    import litellm
+
+    from nooa.unifiedllm import unifiedllm as implementation
+
+    no_image = [{"role": "user", "content": [{"type": "input_text", "text": "describe this"}]}]
+    with_image = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "describe this"},
+                {"type": "input_image", "image_url": "https://example.test/photo.png"},
+            ],
+        }
+    ]
+    # The real, unmocked counter raises on the raw input_image shape.
+    with pytest.raises(Exception, match="input_image"):
+        litellm.token_counter(
+            model="gpt-5.6",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"type": "input_image", "image_url": "https://example.test/x"}],
+                }
+            ],
+        )
+
+    bare_count = litellm.token_counter(
+        model="gpt-5.6", messages=implementation._token_counter_messages(no_image)
+    )
+    image_count = litellm.token_counter(
+        model="gpt-5.6", messages=implementation._token_counter_messages(with_image)
+    )
+    assert image_count > bare_count + 50, (
+        f"image block ({bare_count} -> {image_count}) barely moved the estimate; "
+        "input_image is still not being counted"
+    )

@@ -24,7 +24,7 @@ from nooa.unifiedllm.replay_state import (
     prepare_chat_messages,
     replay_scope,
 )
-from nooa.unifiedllm.response_parts import capture_parts
+from nooa.unifiedllm.response_parts import capture_parts, project_turn
 
 ANTHROPIC_THINKING = [
     {"type": "thinking", "thinking": "Check the inputs.", "signature": "anthropic-sig"},
@@ -341,6 +341,30 @@ def test_native_endpoint_check_matches_dispatchs_own_base_url_precedence(
     from nooa.unifiedllm.replay_state import _uses_native_openai_endpoint
 
     assert _uses_native_openai_endpoint({"api_base": api_base, "base_url": base_url}) is expected
+
+
+def test_summary_only_reasoning_degrades_gracefully_on_a_now_stricter_route() -> None:
+    """A turn captured on a gateway route (native_encrypted_reasoning=False)
+    stores summary-only reasoning as native state. If the same stored turn is
+    later replayed through a client for the same model now resolving to a
+    genuinely native OpenAI/Azure endpoint (native_encrypted_reasoning=True),
+    that native state can't satisfy the stricter route -- this must degrade
+    to portable text like any other incompatible turn, not crash the caller.
+    """
+    scope = replay_scope("openai/gpt-5.6", "responses", {})
+    summary = {
+        key: value for key, value in RESPONSES_REASONING.items() if key != "encrypted_content"
+    }
+    parts = capture_parts([summary, RESPONSES_MESSAGE], scope, native_encrypted_reasoning=False)
+    assert any(part.native is not None for part in parts)
+    turn = LLMResponse(parts=parts, replay_scope=scope)
+
+    result = project_turn(turn, scope, native_encrypted_reasoning=True)
+
+    assert result == [
+        {"role": "assistant", "content": "Check the evidence."},
+        {"role": "assistant", "content": "Answer."},
+    ]
 
 
 @pytest.mark.asyncio

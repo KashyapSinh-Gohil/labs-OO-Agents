@@ -131,12 +131,21 @@ def _history_prefix_stable(prior_body, later_body, key):
     against the same leading slice of ``later_body``'s input list, which is
     exactly the byte-stability a growing explicit-breakpoint conversation
     depends on.
+
+    Anthropic's cacheable prefix and marker can also live in a top-level
+    ``system`` field, separate from ``messages`` -- litellm renders a leading
+    system-role message that way. A regression confined to that field would
+    otherwise report as stable.
     """
     prior_list = [_strip_cache_markers(m) for m in prior_body.get(key, [])]
     later_list = [_strip_cache_markers(m) for m in later_body.get(key, [])]
     if len(later_list) < len(prior_list):
         return False
-    return later_list[: len(prior_list)] == prior_list
+    if later_list[: len(prior_list)] != prior_list:
+        return False
+    return _strip_cache_markers(prior_body.get("system")) == _strip_cache_markers(
+        later_body.get("system")
+    )
 
 
 def _reasoning_values(response):

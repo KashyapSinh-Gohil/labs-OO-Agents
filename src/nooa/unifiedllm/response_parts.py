@@ -205,8 +205,10 @@ def project_turn(
     this outgoing call's route couldn't have gotten one either (the common
     case for every non-native-OpenAI gateway route). If the route now expects
     a real envelope (``native_encrypted_reasoning`` true) but the stored item
-    never had one, that is a genuine incompatibility -- raise rather than send
-    a summary-only item to an endpoint that requires opaque state.
+    never had one, that is a genuine incompatibility -- demote the whole turn
+    to portable text like any other incompatible turn (a scope mismatch),
+    rather than send a summary-only item to an endpoint that requires opaque
+    state or raise and abort the caller's turn outright.
 
     Only this adapter opens native data. It allocates request-owned containers
     and shares immutable string leaves; projecting a turn cannot mutate its
@@ -216,6 +218,19 @@ def project_turn(
     compatible = scope is not None and turn.replay_scope == scope
     if compatible and _scope_provider(scope) not in {"openai", "azure"}:
         raise ReasoningReplayError("Native Responses replay only supports OpenAI and Azure.")
+    if compatible and native_encrypted_reasoning:
+        for part in turn.parts:
+            if (
+                isinstance(part, AssistantReasoning)
+                and part.native is not None
+                and part.native.get("encrypted_content") is None
+            ):
+                logger.warning(
+                    "Stored reasoning has no encrypted envelope but this route requires "
+                    "one; replaying portable text instead of native state."
+                )
+                compatible = False
+                break
     if turn.replay_scope and not compatible:
         logger.warning(
             "Incompatible assistant turn: replaying portable parts without native state."

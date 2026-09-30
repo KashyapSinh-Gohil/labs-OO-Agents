@@ -244,3 +244,23 @@ class TestResponsesClientTransformMessages:
 
         assert instructions is None
         assert input_msgs == [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}]
+
+    def test_empty_string_content_is_still_list_wrapped(self, client):
+        """cache_policy's Responses marker wraps a string unconditionally, even
+        "" -- the pre-wrap here must match, or an empty-content message flips
+        shape between the turn it's marked and every turn after, exactly the
+        instability this PR fixes for nonempty content."""
+        messages = [
+            {"role": "user", "content": ""},
+            {"type": "function_call_output", "call_id": "c1", "output": ""},
+        ]
+        input_msgs, _ = client._transform_messages(messages)
+
+        assert input_msgs == [
+            {"role": "user", "content": [{"type": "input_text", "text": ""}]},
+            {
+                "type": "function_call_output",
+                "call_id": "c1",
+                "output": [{"type": "input_text", "text": ""}],
+            },
+        ]
