@@ -22,6 +22,7 @@ import inspect
 import json
 import logging
 import types
+import typing
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -552,7 +553,6 @@ Standard Python builtins and agent instance (`self`) are available."""
         standalone) or plain Python is an implementation detail; the ``async``
         keyword in the signature already carries the calling contract.
         """
-        import sys
 
         from nooa.runtime.restrictions import is_from_blocked_module
 
@@ -563,34 +563,35 @@ Standard Python builtins and agent instance (`self`) are available."""
         functions: list[tuple[str, Any]] = []  # (name, obj) — all callables, unified
 
         def record_import(obj: Any, name: str) -> None:
-            """Add a `from <module> import <name>` if it's faithfully importable.
+            """Add a `from <module> import <name>` for an imported symbol.
 
-            We only emit an import we know would actually resolve: the object
-            must be reachable as ``<module>.<name>``. Prefer the shortest public
-            path (``from pydantic import BaseModel`` over ``pydantic.main``) by
-            walking the dotted prefixes of ``__module__``. Type aliases and oddly
-            re-exported names (whose ``__module__`` doesn't actually expose them)
-            fall back to a plain in-scope listing rather than a fabricated,
-            unrunnable import.
+            The line documents a name that is already bound in the cell; it is
+            never executed. It is rendered from the object alone -- its declared
+            ``__module__`` and ``__name__`` -- and never from ``sys.modules``.
+            This text sits at the front of every request: if it tracked live
+            process state (another agent re-importing a library, a re-export
+            disappearing after a reload), a flip would restart the provider's
+            prompt cache for the whole conversation. Declared paths are longer
+            than the shortest public one (``pydantic.main`` rather than
+            ``pydantic``) but always name the definition. Parameterized and
+            typing aliases (``list[int]``, ``List[str]``) and nested definitions
+            keep the plain listing rather than a fabricated import.
             """
             mod = getattr(obj, "__module__", None)
-            if not mod:
+            original_name = getattr(obj, "__name__", "")
+            qualname = getattr(obj, "__qualname__", None) or original_name
+            if (
+                not isinstance(mod, str)
+                or not mod
+                or typing.get_origin(obj) is not None
+                or not isinstance(original_name, str)
+                or not original_name.isidentifier()
+                or qualname != original_name
+            ):
                 in_scope_only.append(name)
                 return
-            parts_ = mod.split(".")
-            for i in range(1, len(parts_) + 1):
-                candidate = ".".join(parts_[:i])
-                if getattr(sys.modules.get(candidate), name, None) is obj:
-                    from_imports.setdefault(candidate, set()).add(name)
-                    return
-                original_name = getattr(obj, "__name__", "")
-                if (
-                    original_name.isidentifier()
-                    and getattr(sys.modules.get(candidate), original_name, None) is obj
-                ):
-                    from_imports.setdefault(candidate, set()).add(f"{original_name} as {name}")
-                    return
-            in_scope_only.append(name)
+            alias = name if original_name == name else f"{original_name} as {name}"
+            from_imports.setdefault(mod, set()).add(alias)
 
         for name, obj in context.items():
             if is_from_blocked_module(obj, blocked):

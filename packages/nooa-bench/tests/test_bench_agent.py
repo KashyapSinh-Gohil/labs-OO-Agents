@@ -758,7 +758,10 @@ async def test_solve_task_uses_v2_single_tool_contract(agent_type, tmp_path):
         assert "supplied_context" in rendered
         # The prefix uses concise docs; doc(self.delegate) expands the guidance.
         assert "ordinary method argument" in doc(agent.delegate)
-        assert len(system_prompt) < 20_000
+        # Size guard against prompt bloat. Import lines in the cell context use
+        # each symbol's declared module (stable across reloads), which is ~80
+        # characters longer than the shortest public paths were.
+        assert len(system_prompt) < 20_500
     finally:
         await agent.close()
 
