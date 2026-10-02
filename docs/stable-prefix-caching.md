@@ -55,9 +55,14 @@ not arbitrary history. Automatic Responses adds no cache fields.
 Anthropic marks the latest eligible content block before the boundary, never a
 thinking or redacted-thinking block. Images and documents are eligible, including
 the `image_url` and `file` forms that LiteLLM converts for Anthropic. OpenAI
-Responses marks the latest eligible input text, image, file or function result
-and enables explicit mode. Stable media must be inside the breakpoint rather
-than left after a preceding text block. If necessary,
+Responses reconstructs the latest 80 eligible message endpoints before the
+boundary and enables explicit mode. Each endpoint is the message's last eligible
+input text, image, file or function-result block; assistant output is skipped.
+Stable media must be inside the breakpoint rather than left after a preceding
+text block. This stateless fix retains recent checkpoints as history grows:
+content stability alone is not enough if a warmed checkpoint is absent from the
+next explicit request. OpenAI documents lookup at the latest 80 breakpoints and
+writes at the latest four; four is not an annotation limit. If necessary,
 stable Responses instructions become an input-text block to carry that marker.
 If no eligible stable block exists, forced OpenAI explicit mode remains enabled with
 no breakpoint and logs a warning: the request does not cache anything. This can
@@ -76,6 +81,11 @@ gateway support must still be checked independently.
 A boundary makes the stable prefix eligible for reuse; it does not guarantee a
 hit. Provider thresholds, expiry, routing, model configuration and earlier edits
 still matter. Changing effort or tools may invalidate an otherwise stable prefix.
+Appending more than 80 new eligible endpoints in a single batch can exhaust the
+lookup window and evict every previously warmed checkpoint; this bounded policy
+does not promise a hit for that jump. The instructions-only to input-checkpoint
+transition can also incur a one-time miss; that transition is not addressed by
+this fix.
 
 ## Migration
 
@@ -92,8 +102,10 @@ the framework setting must never become a provider request field.
 ## Code walkthrough: what changed and why
 
 1. `unifiedllm/cache_policy.py` owns the single policy. It consumes the boundary
-   and changes only the final marker target's containers; unrelated messages
-   and large strings are shared.
+   and changes only marker targets' containers; unrelated messages and large
+   strings are shared. The OpenAI reverse scan stops after 80 generated endpoints,
+   skipping ineligible items, without content hashing, deep copies or persistent
+   checkpoint state. Projection and boundary consumption still traverse history.
    `CacheBoundary` is a small, immutable UnifiedLLM input type. The cached renderer
    places it before live context using the same pass-through path as assistant
    responses. The formatter does not translate it or know what it means;
@@ -136,8 +148,29 @@ It adds no runtime mechanism or test dependency. Run it with:
 uv run pytest tests/unifiedllm/test_history_wire_contract.py
 ```
 
-These tests prove request preservation, not provider cache hits. The bounded
-live release checks remain necessary to detect provider and gateway changes.
+These tests prove request preservation, not provider cache hits. Growth tests
+also check checkpoint retention and rollover beyond 80 endpoints. A synthetic
+million-token-scale text history checks bounded markers and shared ownership.
+The full CodeActV2 runtime HTTP test is parametrized with small and large fixed
+`Context(prefix=True)` values, using one million `" alpha"` repetitions under the
+explicit synthetic assumption of one token per repetition. It verifies complete
+text preservation through rendering, `llm_call` middleware, Responses projection
+and actual SDK serialization, SQLite close/reopen of historical assistant turns,
+retained checkpoints over three turns, an excluded changing live suffix and no
+input/native-state mutation. It uses a six-MB immutable string, not a tokenizer
+benchmark or fragile timing/memory bound. Its synthetic context-block budget is
+raised so the normal route limit does not evict the live suffix. No actual
+1M-token live run is claimed.
+
+The opt-in OpenAI-only growing-history live regression makes six requests at
+79, 79, 80, 81, 82 and 82 eligible history endpoints, with a fixed model,
+reasoning configuration and prompt-cache key, and `max_output_tokens=128`.
+It checks exact marker rollover and retained old checkpoints, positive cache
+reads on repeats/growth, and positive growth writes smaller than half the full
+input count (a loose delta-write bound, not exact tokenizer accounting). It is
+not run on ordinary CI and must be run on the deployment to validate real cache
+lookup/writes. Adding the regression does not establish that its live assertions
+have passed.
 
 ### Provider validation
 
