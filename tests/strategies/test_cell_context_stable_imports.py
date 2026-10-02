@@ -22,12 +22,14 @@ LIB_SRC = "class Thing: pass\nclass Helper: pass\ndef util(): pass\n"
 
 
 def _fresh_lib() -> ModuleType:
+    """A new module object for the same library source, as a re-import produces."""
     module = ModuleType(LIB)
     exec(LIB_SRC, vars(module))
     return module
 
 
 async def _render(agent_module: ModuleType) -> str:
+    """Render the cell context for an agent class living in ``agent_module``."""
     strategy = CodeActV2(config=CodeActConfig(prefill=None))
     agent = type("Agent", (), {})()
     agent.__class__.__module__ = agent_module.__name__
@@ -55,6 +57,23 @@ async def test_stub_is_stable_across_library_reimport_and_removal(monkeypatch):
     # ...and later dropped it on shutdown.
     monkeypatch.delitem(sys.modules, LIB)
     assert await _render(agent_module) == first
+
+
+@pytest.mark.asyncio
+async def test_parameterized_aliases_stay_in_the_plain_listing(monkeypatch):
+    """``list[int]`` must not be rendered as ``from builtins import list as X``."""
+    agent_module = ModuleType("stable_import_agent_alias")
+    exec(
+        "import typing\nUserIDs = list[int]\nNames = typing.List[str]\nMaybe = typing.Optional[int]",
+        vars(agent_module),
+    )
+    monkeypatch.setitem(sys.modules, agent_module.__name__, agent_module)
+
+    rendered = await _render(agent_module)
+    assert "from builtins import" not in rendered
+    assert "from typing import" not in rendered
+    listing = rendered.split("Other bound names")[-1]
+    assert all(alias in listing for alias in ("UserIDs", "Names", "Maybe"))
 
 
 @pytest.mark.asyncio
