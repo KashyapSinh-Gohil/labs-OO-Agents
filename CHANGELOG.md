@@ -6,6 +6,10 @@ to follow semantic versioning.
 
 ## [Unreleased]
 
+- Shell commands (`ShellTools.run`, `BashSession.run`) that print more than
+  30,000 characters on stdout or stderr keep the first and last 15,000, with the
+  standard truncation notice (`TruncatingStringIO`). Before, only the first
+  30,000 were kept, so the error at the end of a failing command was lost.
 - `nooa connect` offers the NVIDIA Inference Hub (`inference-api.nvidia.com`,
   key in `NVIDIA_INFERENCE_API_KEY`) as a preset provider, after build.nvidia.com.
 - `import nooa` no longer loads the strategies, the LLM client or LiteLLM

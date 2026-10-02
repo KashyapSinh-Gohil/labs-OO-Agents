@@ -23,12 +23,28 @@ import time
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+from nooa.agentdoc import TruncatingStringIO
+
 logger = logging.getLogger(__name__)
 
 MAX_OUTPUT_CHARS = 30_000
+"""Characters kept of each of a command's stdout and stderr: the first and last half."""
 _DRAIN_TIMEOUT = 0.05  # Seconds to wait for remaining output after sentinel
 _SIGTERM_GRACE = 5.0  # Seconds to wait for sentinel after SIGTERM
 _SIGKILL_GRACE = 2.0  # Seconds to wait for sentinel after SIGKILL
+
+
+def _bounded(text: str) -> str:
+    """``text`` cut to ``MAX_OUTPUT_CHARS``: its head and tail around the standard notice.
+
+    The tail matters as much as the head: a failing command usually ends
+    with its error.
+    """
+    if len(text) <= MAX_OUTPUT_CHARS:
+        return text
+    buffer = TruncatingStringIO(limit=MAX_OUTPUT_CHARS)
+    buffer.write(text)
+    return buffer.getvalue()
 
 
 class BashSession:
@@ -303,10 +319,7 @@ class BashSession:
                 if candidate.startswith("/"):
                     self._cwd = Path(candidate)
 
-        if len(stdout) > MAX_OUTPUT_CHARS:
-            stdout = stdout[:MAX_OUTPUT_CHARS] + "\n... (output truncated)"
-        if len(stderr) > MAX_OUTPUT_CHARS:
-            stderr = stderr[:MAX_OUTPUT_CHARS] + "\n... (stderr truncated)"
+        stdout, stderr = _bounded(stdout), _bounded(stderr)
 
         if timed_out:
             exit_code = 124

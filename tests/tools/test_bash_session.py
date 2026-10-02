@@ -71,6 +71,21 @@ class TestBashSession:
         out, _, _ = await session.run("python3 -c \"print('x' * 50000)\"")
         assert len(out) <= 31000  # MAX_OUTPUT_CHARS + truncation message
 
+    async def test_truncation_keeps_the_head_and_the_tail(self, session):
+        """A long output keeps its end too: a failing command usually ends with its error."""
+        script = "import sys; print('H' * 20000 + 'M' * 20000 + 'T' * 20000); "
+        script += "sys.stderr.write('h' * 20000 + 'm' * 20000 + 't' * 20000)"
+        out, err, code = await session.run(f'python3 -c "{script}"')
+        assert code == 0
+        for text, head, middle, tail in ((out, "H", "M", "T"), (err, "h", "m", "t")):
+            # The standard notice of TruncatingStringIO, then the head, then the tail.
+            assert text.startswith("<truncated-output>\nOutput too large (")
+            assert head * 14000 in text
+            assert tail * 14000 in text
+            assert text.index(head * 14000) < text.index(tail * 14000)
+            assert middle * 1000 not in text
+            assert len(text) <= 31000
+
     async def test_close_and_restart(self, tmp_path):
         """Session should be closeable and re-startable."""
         s = BashSession(cwd=tmp_path)
