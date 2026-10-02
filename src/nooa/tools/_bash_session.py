@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 MAX_OUTPUT_CHARS = 30_000
 """Characters kept of each of a command's stdout and stderr: the first and last half."""
+_BOUNDED_CHUNK_CHARS = 65_536  # Pieces fed to the truncating buffer by _bounded
 _DRAIN_TIMEOUT = 0.05  # Seconds to wait for remaining output after sentinel
 _SIGTERM_GRACE = 5.0  # Seconds to wait for sentinel after SIGTERM
 _SIGKILL_GRACE = 2.0  # Seconds to wait for sentinel after SIGKILL
@@ -43,7 +44,10 @@ def _bounded(text: str) -> str:
     if len(text) <= MAX_OUTPUT_CHARS:
         return text
     buffer = TruncatingStringIO(limit=MAX_OUTPUT_CHARS)
-    buffer.write(text)
+    # Feed the buffer in bounded pieces: one write of the whole stream would
+    # copy everything past the head a second time before the tail is trimmed.
+    for start in range(0, len(text), _BOUNDED_CHUNK_CHARS):
+        buffer.write(text[start : start + _BOUNDED_CHUNK_CHARS])
     return buffer.getvalue()
 
 

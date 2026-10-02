@@ -86,6 +86,20 @@ class TestBashSession:
             assert middle * 1000 not in text
             assert len(text) <= 31000
 
+    def test_bounded_matches_one_write_and_keeps_both_ends(self):
+        """Chunked feeding gives the same text as one write, for every size around the limit."""
+        from nooa.agentdoc import TruncatingStringIO
+        from nooa.tools._bash_session import MAX_OUTPUT_CHARS, _bounded
+
+        for size in (MAX_OUTPUT_CHARS, MAX_OUTPUT_CHARS + 1, 65_536, 65_537, 300_000):
+            text = "".join(chr(ord("a") + i % 26) for i in range(size))
+            reference = TruncatingStringIO(limit=MAX_OUTPUT_CHARS)
+            reference.write(text)
+            assert _bounded(text) == reference.getvalue()
+            if size > MAX_OUTPUT_CHARS:
+                assert text[: MAX_OUTPUT_CHARS // 2] in _bounded(text)
+                assert text[-(MAX_OUTPUT_CHARS // 2) :] in _bounded(text)
+
     async def test_close_and_restart(self, tmp_path):
         """Session should be closeable and re-startable."""
         s = BashSession(cwd=tmp_path)
