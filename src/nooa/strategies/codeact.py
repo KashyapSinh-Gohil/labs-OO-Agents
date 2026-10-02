@@ -563,33 +563,58 @@ Standard Python builtins and agent instance (`self`) are available."""
         functions: list[tuple[str, Any]] = []  # (name, obj) — all callables, unified
 
         def record_import(obj: Any, name: str) -> None:
-            """Add a `from <module> import <name>` if it's faithfully importable.
+            """Add a `from <module> import <name>` for an imported symbol.
 
-            We only emit an import we know would actually resolve: the object
-            must be reachable as ``<module>.<name>``. Prefer the shortest public
-            path (``from pydantic import BaseModel`` over ``pydantic.main``) by
-            walking the dotted prefixes of ``__module__``. Type aliases and oddly
-            re-exported names (whose ``__module__`` doesn't actually expose them)
-            fall back to a plain in-scope listing rather than a fabricated,
-            unrunnable import.
+            The line documents a name that is already bound in the cell; it is
+            never executed. Prefer the shortest public path (``from pydantic
+            import BaseModel`` over ``pydantic.main``) by walking the dotted
+            prefixes of ``__module__``. A prefix counts when it exposes the same
+            definition -- same module and qualname -- not necessarily the same
+            object: another agent in this process may have re-imported the
+            library (its skill registry refreshes ``sys.modules`` to see current
+            source), which yields a new class object for the same code. This
+            text sits at the front of every request, so it must depend only on
+            the bound object, not on what ``sys.modules`` holds right now; a
+            flip to the plain in-scope listing restarts the provider's prompt
+            cache for the whole conversation. Type aliases and oddly re-exported
+            names (no identifier ``__name__``, or a nested qualname) keep the
+            plain listing rather than a fabricated import.
             """
             mod = getattr(obj, "__module__", None)
             if not mod:
                 in_scope_only.append(name)
                 return
+            original_name = getattr(obj, "__name__", "")
+            qualname = getattr(obj, "__qualname__", None) or original_name
+
+            def same_definition(candidate: Any) -> bool:
+                return candidate is obj or (
+                    candidate is not None
+                    and getattr(candidate, "__module__", None) == mod
+                    and getattr(candidate, "__qualname__", None) == qualname
+                )
+
             parts_ = mod.split(".")
             for i in range(1, len(parts_) + 1):
                 candidate = ".".join(parts_[:i])
-                if getattr(sys.modules.get(candidate), name, None) is obj:
+                module = sys.modules.get(candidate)
+                if module is None:
+                    continue
+                if same_definition(getattr(module, name, None)):
                     from_imports.setdefault(candidate, set()).add(name)
                     return
-                original_name = getattr(obj, "__name__", "")
-                if (
-                    original_name.isidentifier()
-                    and getattr(sys.modules.get(candidate), original_name, None) is obj
+                if original_name.isidentifier() and same_definition(
+                    getattr(module, original_name, None)
                 ):
                     from_imports.setdefault(candidate, set()).add(f"{original_name} as {name}")
                     return
+            # Not reachable through sys.modules at the moment (the module was
+            # dropped after a reload elsewhere). A top-level definition still
+            # names itself; emit that instead of a listing that tracks process state.
+            if original_name.isidentifier() and qualname == original_name:
+                alias = name if original_name == name else f"{original_name} as {name}"
+                from_imports.setdefault(mod, set()).add(alias)
+                return
             in_scope_only.append(name)
 
         for name, obj in context.items():
