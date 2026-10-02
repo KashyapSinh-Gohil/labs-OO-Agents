@@ -195,3 +195,102 @@ NOOA_RUN_CACHE_RESUME_LIVE=1 uv run pytest -m integration -s tests/integration/t
 Configure its registry aliases for your deployment. Exact replay does not
 control how much a provider caches; compare reported usage as well as outgoing
 requests.
+
+### Real CodeActV2 cache matrix
+
+`tests/integration/test_agent_cache_live.py` exercises a module-level Agent
+through the actual CodeActV2 runtime, rather than a standalone client prompt.
+Its exact deployment matrix is:
+
+| Case | Client | Model | API base |
+| --- | --- | --- | --- |
+| GPT 6.1 Sol | ResponsesClient | `openai/azure/openai/gpt-6.1-sol` | `https://inference-api.nvidia.com/v1` |
+| Opus 5.5 | CompletionClient | `anthropic/azure/anthropic/claude-opus-5-5` | `https://inference-api.nvidia.com` |
+| GLM 5.3 | CompletionClient | `openai/nvidia/zai-org/glm-5.3` | `https://inference-api.nvidia.com/v1` |
+| Kimi K3 | CompletionClient | `openai/nvidia/moonshotai/kimi-k3` | `https://inference-api.nvidia.com/v1` |
+
+A fixed `Context(prefix=True)` contains approximately 12K tokens of inert
+padding, preceded by one unique per-run nonce that stays unchanged across turns
+to prevent a previous trial from warming the large reference prefix. A private live-state attribute changes inside three executed cells
+(`x=1`, increment, increment, printing each value); the fourth cell calls
+`return_result(x)`. Expression Context is checked before every real model call.
+The test demands result 3 and four valid, single `python_cell` calls, no
+Python errors, and all four live phases in order. Each cell is AST-checked
+against the required arithmetic step **before execution**; whitespace/comments
+are allowed, but extra work or environment access fails without executing it.
+Exactly four responses and outgoing HTTP POSTs are required; the eight-iteration
+strategy budget is only a failure bound, not permission for hidden retries.
+Historical assistant response objects are closed/reopened through a temporary
+SQLite archive in `llm_call` middleware before subsequent dispatch; ordered
+native parts, replay scope and usage must survive. This tests database-backed
+assistant replay, not restoration of an interrupted execution session.
+
+Usage is collected after the middleware continuation. At least two later calls
+must report positive `cached_input_tokens`; the latest read must exceed half
+of the initial input token count. The initial count must also exceed 8192.
+Provider misses, omitted usage, invalid responses and provider errors **fail**:
+there are no model/provider/cache-policy fallbacks or provider-dependent skips.
+Output caps are 4096, HTTP timeout is 180 seconds, transport/API retries are
+zero, and the strategy error budget is one (`max_retries=0` currently prevents
+its initial iteration). The strategy permits at most eight iterations. Opus
+uses adaptive thinking with low effort, GPT uses low reasoning effort, and GLM
+and Kimi receive no speculative reasoning settings. Cache policy remains `auto`.
+
+Ordinary CI runs only the deterministic HTTP matrix and cache-hit negative
+controls. These use the same clients, SDK serialization, Agent and middleware,
+and check native reasoning on outgoing mocked requests, caps, route identities
+and supported thinking settings. They establish request contracts, **not** live
+provider cache behavior:
+
+```sh
+uv run pytest tests/integration/test_agent_cache_live.py
+```
+
+To spend inference tokens, securely export `NVIDIA_INFERENCE_API_KEY`, then run:
+
+```sh
+NOOA_RUN_AGENT_CACHE_LIVE=1 uv run pytest -m integration -s tests/integration/test_agent_cache_live.py
+```
+
+Without opt-in the live cases skip (or are deselected by the default marker
+filter). With opt-in, missing credentials fail. A live run normally makes 16
+provider calls. A forwarding HTTP observer compares stable history and settings
+in memory and reports only prefix-stability and call-count diagnostics; it does
+not change requests or log raw payloads, credentials, signatures, encrypted
+state or generated responses. Automatic trace export is disabled for
+this module (the integration fixtures also reset tracing hooks/exporters).
+SQLite archives and sidecars are deleted in cleanup, including failures;
+while running they can contain native provider state. Do not publish them or
+enable raw SDK/debug logging. Safe output is allowlisted route
+configuration, normalized usage, and prefix-stability/call-count diagnostics only.
+
+This belongs in pytest as the primary runtime regression. Connect probes test
+endpoint capabilities; they are not a replacement for executing real CodeActV2
+cells. Existing connect client/config construction may be reused in the future
+if it becomes a stable, suitable public API; no production connect runner or
+connect behavior change is required for this test.
+
+### Observed live matrix results
+
+The cold-isolated four-model run on 2026-10-02 passed all four cases, with four
+real HTTP requests and stable historical wire prefixes per model. Continuation
+cache-read tokens (calls 2/3/4) were:
+
+| Model | Cache reads |
+| --- | --- |
+| GPT 6.1 Sol | 13,645 / 13,746 / 13,848 |
+| Opus 5.5 | 26,987 / 27,156 / 27,324 |
+| GLM 5.3 | 13,632 / 13,760 / 13,824 |
+| Kimi K3 | 0 / 13,632 / 13,632 |
+
+Kimi did **not** pass every trial: two earlier runs had only one later cache hit
+and failed the same strict acceptance rule. A repeated shared-prefix trial
+passed but was not independent cold evidence. The final nonce-isolated,
+wire-observed trial passed without relaxing assertions. These observations show
+that Kimi can cache this workload, not that immediate continuation reuse is
+reliable; routing/cache availability or telemetry remain possible causes.
+No automatic retries, waits to force cache hits, or provider-dependent skips
+are used to mask this variability. Opus emitted a LiteLLM warning that adaptive
+thinking was dropped on continuations without returned thinking blocks; cache
+reuse still succeeded. These are ~14K/~27K input-token trials, not a live
+million-token benchmark.
