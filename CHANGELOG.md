@@ -6,6 +6,10 @@ to follow semantic versioning.
 
 ## [Unreleased]
 
+- Shell commands (`ShellTools.run`, `BashSession.run`) that print more than
+  30,000 characters on stdout or stderr keep the first and last 15,000, with the
+  standard truncation notice (`TruncatingStringIO`). Before, only the first
+  30,000 were kept, so the error at the end of a failing command was lost.
 - `nooa connect` says which variable its key comes from ("Using the key in
   NVIDIA_INFERENCE_API_KEY."). When the server rejects the key while listing models,
   it asks for another and tries again instead of exiting; `--yes` runs still stop.
