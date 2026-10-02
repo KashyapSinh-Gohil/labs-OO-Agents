@@ -85,6 +85,7 @@ async def test_fork_is_background_isolated_and_applied_only_at_boundary():
     assert seen[0][0][1] is ctx.messages[1]
     assert seen[0][0][2] is ctx.messages[2]
     assert seen[0][1] == ctx.params
+    assert ctx.params["tool_choice"] == "auto"
     assert seen[0][0][-1]["role"] == "user"
     assert "1" in seen[0][0][-1]["content"] and "3" in seen[0][0][-1]["content"]
     ctx.messages[-1]["content"][0]["text"] = "changed"
@@ -310,6 +311,7 @@ async def test_install_does_not_change_parent_request_and_fork_uses_effective_cl
         await summarizer._pending_task
         assert calls[0] == calls[1]
         assert calls[2][1] == calls[1][1]
+        assert calls[1][1]["tool_choice"] == "auto"
         assert calls[2][0][:-1] == calls[1][0]
         assert calls[2][0][1] is calls[1][0][1]
         assert "prompt_cache_key" not in policy_params[0]
@@ -594,3 +596,128 @@ async def test_close_callbacks_are_awaited_once_in_reverse_order(caplog):
     assert calls == ["broken", "first"]
     removed.assert_not_awaited()
     assert "cleanup failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_fork_retains_declared_checkpoint_intent_and_summary_stays_outside_prefix():
+    from unittest.mock import patch
+
+    from nooa.unifiedllm import ResponsesClient
+
+    agent, summarizer, ctx = setup()
+    ctx.messages[0]["nooa_cache_checkpoint"] = True
+    ctx.messages[1] = ctx.messages[1].model_copy(
+        update={"metadata": {"nooa_cache_checkpoint": True}}
+    )
+    ctx.messages[2] = CacheBoundary(checkpoints_declared=True)
+    seen = []
+
+    async def summary_call(messages, **params):
+        seen.append(messages)
+        return response()
+
+    agent.llm.acall = summary_call
+
+    async def core(request):
+        request.response = response("parent")
+        return request
+
+    await agent.event_manager.run_middleware("llm_call", ctx, core)
+    await summarizer._pending_task
+    fork = seen[0]
+    assert fork[0]["nooa_cache_checkpoint"] is True
+    assert fork[1] is ctx.messages[1] and fork[1].metadata["nooa_cache_checkpoint"]
+    assert fork[2] is ctx.messages[2] and fork[2].checkpoints_declared
+    assert "nooa_cache_checkpoint" not in fork[-1]
+    assert "Background memory compaction" in fork[-1]["content"]
+    with ResponsesClient("openai/gpt-5.6") as client:
+        projected, instructions = client._transform_messages(fork)
+        with patch(
+            "nooa.unifiedllm.cache_policy._mark_responses_cache_breakpoint",
+            side_effect=AssertionError("fork must retain declared plan"),
+        ):
+            wire, _, enabled = client._prepare_cache_boundary(
+                projected, responses=True, instructions=instructions
+            )
+    assert enabled and "prompt_cache_breakpoint" in repr(wire[0])
+    assert "prompt_cache_breakpoint" not in repr(wire[-2:])
+    assert "nooa_cache_checkpoint" not in repr(wire)
+    summarizer._uninstall()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "style,model,mapping,override,disable",
+    [
+        ("responses", "openai/gpt-5.6", "auto", None, True),
+        ("responses", "openai/gpt-5.6", None, None, True),
+        ("chat", "anthropic/claude-opus-5-5", "auto", None, True),
+        ("chat", "claude-sonnet-4-5", "auto", None, True),
+        ("chat", "bedrock/anthropic.claude-sonnet-4-5", "auto", None, True),
+        ("chat", "openai/opaque-gateway", "anthropic", None, True),
+        ("chat", "anthropic/claude-opus-5-5", None, None, False),
+        ("chat", "openai/nvidia/zai-org/glm-5.3", "auto", None, False),
+        ("chat", "openai/nvidia/moonshotai/kimi-k3", "auto", None, False),
+        ("chat", "openai/gpt-5.6", "auto", None, False),
+        ("chat", "bedrock/amazon.titan-text", "auto", None, False),
+        ("chat", "bedrock/cohere.command-r", "auto", None, False),
+        ("chat", "bedrock/meta.llama3", "auto", None, False),
+        ("chat", "openai/gpt-5.6", "auto", "anthropic/claude-opus-5-5", True),
+        ("chat", "anthropic/claude-opus-5-5", "auto", "openai/gpt-5.6", False),
+    ],
+)
+@pytest.mark.parametrize("choice", [None, "auto", "required", "named"])
+async def test_fork_tool_choice_is_conservative_per_effective_route(
+    style, model, mapping, override, disable, choice
+):
+    from nooa.unifiedllm import CompletionClient, ResponsesClient, Tool
+
+    agent, summarizer, ctx = setup()
+    cls = ResponsesClient if style == "responses" else CompletionClient
+    client = cls(
+        model,
+        api_key="offline-key",
+        api_base="https://example.test/v1",
+        cache_breakpoint=mapping,
+        temperature=0.2,
+        tool_choice="auto",
+    )
+    # The effective request client, not the parent's default FakeLLMClient,
+    # decides the API route. No actual provider dispatch in this unit test.
+    ctx = ctx.model_copy(update={"client": client})
+    tool = Tool(name="run", callable=lambda: None, description="Never invoked")
+    ctx.params["tools"] = [tool]
+    if choice is None:
+        ctx.params.pop("tool_choice")
+    else:
+        ctx.params["tool_choice"] = (
+            {"type": "function", "function": {"name": "run"}} if choice == "named" else choice
+        )
+    if override:
+        ctx.params["model"] = override
+    original_params = dict(ctx.params)
+    original_config = dict(client.config)
+    client.acall = AsyncMock(return_value=response())
+    agent.llm.acall = AsyncMock(side_effect=AssertionError("Wrong client"))
+
+    async def core(request):
+        request.response = response("parent")
+        return request
+
+    try:
+        await agent.event_manager.run_middleware("llm_call", ctx, core)
+        assert summarizer._pending_task is not None
+        await summarizer._pending_task
+        expected = {**original_params, "output_model": None}
+        if disable:
+            expected["tool_choice"] = "none"
+        assert client.acall.call_args.kwargs == expected
+        assert client.acall.call_args.kwargs["tools"][0] is tool
+        assert client.acall.call_args.args[0][:-1] == ctx.messages
+        assert ctx.params == original_params
+        assert client.config == original_config
+        agent.llm.acall.assert_not_awaited()
+        assert summarizer._pending_summary == "summary"
+    finally:
+        await summarizer.aclose()
+        await client.aclose()

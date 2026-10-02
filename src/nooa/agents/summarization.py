@@ -34,6 +34,7 @@ from nooa.config.strategy_config import PredictConfig
 from nooa.decorators import strategy
 from nooa.metaclass import no_trace
 from nooa.strategies import PredictStrategy
+from nooa.unifiedllm import CompletionClient, ResponsesClient
 
 logger = logging.getLogger(__name__)
 
@@ -726,6 +727,20 @@ class TokenBudgetSummarizer(SummarizationAgent):
             messages = _copy_request_containers(ctx.messages)
             params = _copy_request_containers(ctx.params)
             params["output_model"] = None
+            # Provider API handling, not a guarantee that every Chat route honors
+            # the summary prompt. Changing tool_choice can change input formatting
+            # and cache eligibility on compatible Chat servers, so leave their
+            # original params intact. Keep all schemas; reject executable replies
+            # in _run_fork regardless of this conservative API allowlist.
+            disable_tools = isinstance(ctx.client, ResponsesClient)
+            if isinstance(ctx.client, CompletionClient):
+                call_config = ctx.client._prepare_call_config(params)
+                model = ctx.client._effective_model(call_config)
+                disable_tools = (
+                    ctx.client._resolve_cache_mapping(model, responses=False) == "anthropic"
+                )
+            if disable_tools:
+                params["tool_choice"] = "none"
         except Exception:
             logger.warning(
                 "Could not snapshot summary fork; parent call is unchanged", exc_info=True
@@ -739,7 +754,10 @@ class TokenBudgetSummarizer(SummarizationAgent):
                     f"in approximately {self.config.target_chars} characters. Other events are "
                     "context only. Preserve decisions, exact numbers, outcomes and pending work. "
                     "Write only the summary as plain text. Do not continue the original task "
-                    "or call any tools. This is an isolated summary, not an execution turn."
+                    "or call any tools (including python_cell, execute_python or return_result). "
+                    "Earlier tool-use instructions apply only to the original task, not this "
+                    "request. Respond directly with summary text, not code or tool calls. "
+                    "This is an isolated summary, not an execution turn."
                 ),
             }
         )

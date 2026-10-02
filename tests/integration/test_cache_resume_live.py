@@ -602,6 +602,7 @@ async def test_openai_growing_history_cache_checkpoint_rollover(monkeypatch):
         return await original_send(client, request, *args, **kwargs)
 
     monkeypatch.setattr(httpx.AsyncClient, "send", capture_send)
+    previous_input_tokens = None
     async with _client("openai") as client:
         for phase, count in phases:
             messages = _render("openai", events[:count], instructions, f"phase={phase}")
@@ -627,12 +628,14 @@ async def test_openai_growing_history_cache_checkpoint_rollover(monkeypatch):
             assert response.usage is not None
             usage = response.usage
             assert usage.input_tokens > 0
-            if phase == "79":
-                assert usage.cache_write_input_tokens > 0, "seed reported no cache write"
-            else:
-                assert usage.cached_input_tokens > 0, f"{phase} reported no cache read"
-            if phase in {"80", "81", "82"}:
-                assert 0 < usage.cache_write_input_tokens < usage.input_tokens / 2, (
-                    f"{phase} did not report a small positive delta write: {usage}"
+            if previous_input_tokens is not None:
+                # Repeats alone also hit with the old moving-marker policy;
+                # the growing phases are the regression signal. Require reuse
+                # of history, not a small instructions-only cache hit.
+                assert usage.cached_input_tokens >= 0.9 * previous_input_tokens, (
+                    f"{phase} did not reuse most of the previous prompt: {usage}"
                 )
+            # Cache-write telemetry varies by gateway. Log it via _report_usage,
+            # but do not make successful reads depend on reported writes.
+            previous_input_tokens = usage.input_tokens
     assert len(requests) == 6, "expected exactly six provider requests"

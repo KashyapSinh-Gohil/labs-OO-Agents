@@ -109,11 +109,18 @@ async def test_collapse_keeps_only_complete_active_native_turns(
     captured = []
 
     async def observe_dispatch(messages, **kwargs):
-        assert any(item is rendered_events[second.id] for item in messages)
+        source = rendered_events[second.id]
+        retained = next(
+            item for item in messages if isinstance(item, LLMResponse) and item.id == source.id
+        )
+        assert retained is not source  # request-only checkpoint metadata copy
+        assert retained.parts is source.parts
+        assert retained.replay_scope == source.replay_scope
+        assert retained.metadata == {**source.metadata, "nooa_cache_checkpoint": True}
         assert not any(item is rendered_events.get(first.id) for item in messages)
         summary = next(m for m in messages if "Earlier work summarized." in str(m.get("content")))
         assert summary["role"] == "assistant"
-        assert set(summary) == {"role", "content"}
+        assert set(summary) == {"role", "content", "nooa_cache_checkpoint"}
         assert "native-secret" not in json.dumps([dict(m) for m in messages])
         return await dispatch(messages, **kwargs)
 

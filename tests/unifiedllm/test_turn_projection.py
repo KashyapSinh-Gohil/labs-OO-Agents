@@ -242,7 +242,12 @@ def test_relay_insertion_does_not_attach_state_to_new_neighbors():
 
 def test_renderer_keeps_reference_and_truncation_replaces_without_native_state():
     original = turn()
-    assert render(original).output[1] == original
+    retained = render(original).output[1]
+    assert retained is not original  # request-only checkpoint metadata copy
+    assert retained.parts is original.parts
+    assert retained.replay_scope == original.replay_scope
+    assert retained.metadata == {**original.metadata, "nooa_cache_checkpoint": True}
+    assert "nooa_cache_checkpoint" not in original.metadata
 
     class ShortFormatter(CachedBlockFormatter):
         def format_event(self, event, event_format=None):
@@ -392,7 +397,12 @@ async def test_mocked_dispatch_resume_and_changing_live_suffix(monkeypatch, tmp_
         resumed.close()
         for state in ("live 1", "live 2"):
             ctx = LLMCallContext(messages=render(loaded, state).output)
-            assert ctx.messages[1] is loaded
+            retained = ctx.messages[1]
+            assert retained is not loaded  # request-only checkpoint metadata copy
+            assert retained.parts is loaded.parts
+            assert retained.replay_scope == loaded.replay_scope
+            assert retained.metadata == {**loaded.metadata, "nooa_cache_checkpoint": True}
+            assert "nooa_cache_checkpoint" not in loaded.metadata
             await invoke(ctx.messages)
         assert captured[-2][:-1] == captured[-1][:-1]
         assert captured[-2][-1] != captured[-1][-1]

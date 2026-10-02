@@ -27,7 +27,6 @@ from typing import TYPE_CHECKING, Any, TypeGuard
 
 if TYPE_CHECKING:
     from nooa.config.truncation_config import FormatConfig
-    from nooa.llm_types import LLMResponse
 
 from nooa.agentdoc import pformat
 from nooa.context_blocks.events import CODEACT_INLINE_RETURN, EventBase, ToolCallEvent
@@ -37,7 +36,7 @@ from nooa.context_blocks.models import (
     Role,
     ToolCallInfo,
 )
-from nooa.llm_types import assistant_message
+from nooa.llm_types import CacheBoundary, LLMResponse, assistant_message
 
 logger = logging.getLogger(__name__)
 
@@ -530,11 +529,14 @@ def _with_reasoning(message: dict[str, Any], reasoning: str | None) -> dict[str,
 
 
 class OpenAIProviderFormatter(ProviderFormatter):
-    """Emit OpenAI-compatible messages (``list[dict]``)."""
+    """Emit compatible dictionaries, retained assistant turns, and cache declarations."""
 
-    def format(self, messages: list[RenderedMessage]) -> list[dict]:
-        out: list[dict] = []
+    def format(
+        self, messages: list[RenderedMessage]
+    ) -> list[dict[str, Any] | LLMResponse | CacheBoundary]:
+        out: list[dict[str, Any] | LLMResponse | CacheBoundary] = []
         for msg in messages:
+            start = len(out)
             if msg.replay_message is not None:
                 out.append(
                     msg.replay_message.render_message(
@@ -568,4 +570,15 @@ class OpenAIProviderFormatter(ProviderFormatter):
                         msg.reasoning,
                     )
                 )
+            if msg.cache_checkpoint:
+                for index in range(start, len(out)):
+                    item = out[index]
+                    if isinstance(item, LLMResponse):
+                        # Deliberate request-only metadata copy; do not stamp the
+                        # recorded response or rebuild its immutable native parts.
+                        out[index] = item.model_copy(
+                            update={"metadata": {**item.metadata, "nooa_cache_checkpoint": True}}
+                        )
+                    elif isinstance(item, dict):
+                        item["nooa_cache_checkpoint"] = True
         return out

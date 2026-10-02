@@ -119,8 +119,10 @@ async def test_fork_wire_prefix_and_settings_are_identical(family, monkeypatch):
     assert len(bodies) == 2
     parent, fork = bodies
     key = "input" if family == "openai" else "messages"
-    assert {k: v for k, v in parent.items() if k != key} == {
-        k: v for k, v in fork.items() if k != key
+    expected_choice = "none" if family == "openai" else {"type": "none"}
+    assert fork["tool_choice"] == expected_choice
+    assert {k: v for k, v in parent.items() if k not in {key, "tool_choice"}} == {
+        k: v for k, v in fork.items() if k not in {key, "tool_choice"}
     }
     if family == "openai":
         assert fork[key][:-1] == parent[key]

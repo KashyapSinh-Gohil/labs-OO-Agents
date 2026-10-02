@@ -205,10 +205,17 @@ async def test_runtime_preserves_response_objects_and_rebuilds_on_recovery(
         _current_llm_var.reset(token)
         _current_method_var.reset(method_token)
 
-    assert any(message is previous for message in seen[0])
+    retained = next(message for message in seen[0] if isinstance(message, LLMResponse))
+    assert retained is not previous  # request-only checkpoint metadata copy
+    assert retained.parts is previous.parts
+    assert retained.replay_scope == previous.replay_scope
+    assert retained.metadata == {**previous.metadata, "nooa_cache_checkpoint": True}
+    assert "nooa_cache_checkpoint" not in previous.metadata
     assert len(seen) == (2 if recover else 1)
     if recover:
-        assert not any(message is previous for message in seen[1])
+        assert not any(
+            isinstance(message, LLMResponse) and message.id == previous.id for message in seen[1]
+        )
     assert len(intercepted) == (len(seen) if middleware else 0)
 
 

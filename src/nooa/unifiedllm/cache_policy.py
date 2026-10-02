@@ -3,6 +3,7 @@
 """One stable-prefix boundary policy, applied after provider projection."""
 
 import logging
+from collections import deque
 from collections.abc import Mapping
 from typing import Any, Literal
 
@@ -151,13 +152,41 @@ def apply_cache_policy(
     """Consume one boundary; direct callers default to their leading instructions."""
     clean = []
     boundary = None
+    declared = False
+    instructions_checkpoint = False
+    # Hints are consumed in this forward pass after native/provider projection.
+    # Only eligible input endpoints consume the Responses lookup budget.
+    candidates: deque[tuple[int, dict[str, Any]]] = deque(maxlen=80)
+    latest_anthropic = None
     for message in messages:
         if isinstance(message, CacheBoundary):
             if boundary is not None:
                 raise ValueError("Rendered history contains more than one cache boundary")
             boundary = len(clean)
+            declared = message.checkpoints_declared
+            instructions_checkpoint = message.instructions_checkpoint
             continue
         reject_boundary_dict(message)
+        checkpoint = message.get("nooa_cache_checkpoint", False)
+        if "nooa_cache_checkpoint" in message:
+            message = {k: v for k, v in message.items() if k != "nooa_cache_checkpoint"}
+        if checkpoint and boundary is None:
+            if responses and mapping in {"auto", "openai"}:
+                key = (
+                    "output"
+                    if message.get("type") == "function_call_output"
+                    else "content"
+                    if message.get("role") in {"system", "developer", "user"}
+                    else None
+                )
+                if key is not None:
+                    content, marked = _mark_responses_content(message.get(key))
+                    if marked:
+                        candidates.append((len(clean), {**message, key: content}))
+            elif mapping == "anthropic":
+                marked_message = _mark_anthropic(message)
+                if marked_message is not None:
+                    latest_anthropic = (len(clean), marked_message)
         clean.append(message)
     if mapping is None:
         return clean, instructions, False
@@ -173,16 +202,26 @@ def apply_cache_policy(
     if mapping == "anthropic":
         if responses:
             raise ValueError("The Anthropic cache mapping requires CompletionClient")
-        for i in range(boundary - 1, -1, -1):
-            marked = _mark_anthropic(clean[i])
-            if marked is not None:
-                clean[i] = marked
-                break
+        if declared:
+            if latest_anthropic is not None:
+                index, marked = latest_anthropic
+                clean[index] = marked
+        else:
+            for i in range(boundary - 1, -1, -1):
+                marked = _mark_anthropic(clean[i])
+                if marked is not None:
+                    clean[i] = marked
+                    break
         return clean, instructions, False
     if not responses:
         raise ValueError("The OpenAI explicit cache mapping requires ResponsesClient")
-    marked = _mark_responses_cache_breakpoint(clean, boundary)
-    if not marked and instructions:
+    if declared:
+        for index, item in candidates:
+            clean[index] = item
+        marked = bool(candidates)
+    else:
+        marked = _mark_responses_cache_breakpoint(clean, boundary)
+    if not marked and instructions and (not declared or instructions_checkpoint):
         content, marked = _mark_responses_content(instructions)
         clean.insert(0, {"role": "system", "content": content})
         instructions = None
