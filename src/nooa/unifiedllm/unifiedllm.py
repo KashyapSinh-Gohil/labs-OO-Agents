@@ -27,6 +27,7 @@ from nooa.llm_types import (
     ToolCall,
 )
 from nooa.unifiedllm.cache_policy import (
+    add_session_affinity_header,
     apply_cache_policy,
     enable_openai_explicit_cache,
     reject_boundary_dict,
@@ -1967,6 +1968,8 @@ class CompletionClient(UnifiedLLM):
             # can create conflicting tool-choice settings in compatible servers.
             api_params.pop("tool_choice")
 
+        add_session_affinity_header(api_params)
+
         retry_on_empty = self.retry_config.retry_on_empty_content if self.retry_config else False
 
         http_client = self._completion_http_client(call_config, is_async=False)
@@ -2064,6 +2067,8 @@ class CompletionClient(UnifiedLLM):
             # Auto is the default with tools; sending it alongside parallel=False
             # can create conflicting tool-choice settings in compatible servers.
             api_params.pop("tool_choice")
+
+        add_session_affinity_header(api_params)
 
         retry_on_empty = self.retry_config.retry_on_empty_content if self.retry_config else False
 
@@ -2352,6 +2357,7 @@ class ResponsesClient(UnifiedLLM):
         replay_state.add_encrypted_reasoning_include(
             api_params, state_scope, native_encrypted_reasoning=native_encrypted_reasoning
         )
+        add_session_affinity_header(api_params)
 
         http_client = self._http
         assert http_client is not None
@@ -2434,6 +2440,7 @@ class ResponsesClient(UnifiedLLM):
         replay_state.add_encrypted_reasoning_include(
             api_params, state_scope, native_encrypted_reasoning=native_encrypted_reasoning
         )
+        add_session_affinity_header(api_params)
 
         http_client = self._http
         assert http_client is not None
