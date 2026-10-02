@@ -230,9 +230,9 @@ must report positive `cached_input_tokens`; the latest read must exceed half
 of the initial input token count. The initial count must also exceed 8192.
 Provider misses, omitted usage, invalid responses and provider errors **fail**:
 there are no model/provider/cache-policy fallbacks or provider-dependent skips.
-Output caps are 4096, HTTP timeout is 180 seconds, transport/API retries are
-zero, and the strategy error budget is one (`max_retries=0` currently prevents
-its initial iteration). The strategy permits at most eight iterations. Opus
+Output caps are 4096, HTTP timeout is 180 seconds, and transport/API retries
+are zero. The CodeAct strategy uses an error budget of one (`max_retries=1`)
+and permits at most eight iterations. Opus
 uses adaptive thinking with low effort, GPT uses low reasoning effort, and GLM
 and Kimi receive no speculative reasoning settings. Cache policy remains `auto`.
 
@@ -269,28 +269,3 @@ endpoint capabilities; they are not a replacement for executing real CodeActV2
 cells. Existing connect client/config construction may be reused in the future
 if it becomes a stable, suitable public API; no production connect runner or
 connect behavior change is required for this test.
-
-### Observed live matrix results
-
-The cold-isolated four-model run on 2026-10-02 passed all four cases, with four
-real HTTP requests and stable historical wire prefixes per model. Continuation
-cache-read tokens (calls 2/3/4) were:
-
-| Model | Cache reads |
-| --- | --- |
-| GPT 6.1 Sol | 13,645 / 13,746 / 13,848 |
-| Opus 5.5 | 26,987 / 27,156 / 27,324 |
-| GLM 5.3 | 13,632 / 13,760 / 13,824 |
-| Kimi K3 | 0 / 13,632 / 13,632 |
-
-Kimi did **not** pass every trial: two earlier runs had only one later cache hit
-and failed the same strict acceptance rule. A repeated shared-prefix trial
-passed but was not independent cold evidence. The final nonce-isolated,
-wire-observed trial passed without relaxing assertions. These observations show
-that Kimi can cache this workload, not that immediate continuation reuse is
-reliable; routing/cache availability or telemetry remain possible causes.
-No automatic retries, waits to force cache hits, or provider-dependent skips
-are used to mask this variability. Opus emitted a LiteLLM warning that adaptive
-thinking was dropped on continuations without returned thinking blocks; cache
-reuse still succeeded. These are ~14K/~27K input-token trials, not a live
-million-token benchmark.
