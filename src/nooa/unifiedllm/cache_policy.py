@@ -101,7 +101,11 @@ def add_session_affinity_header(api_params: dict[str, Any]) -> None:
     if headers is not None and not isinstance(headers, Mapping):
         raise ValueError("extra_headers must be a mapping")
     merged = dict(headers or {})
-    merged.setdefault(SESSION_AFFINITY_HEADER, key)
+    # Header names are case-insensitive; a caller's X-Session-Affinity wins too.
+    if not any(
+        isinstance(name, str) and name.lower() == SESSION_AFFINITY_HEADER for name in merged
+    ):
+        merged[SESSION_AFFINITY_HEADER] = key
     api_params["extra_headers"] = merged
 
 
