@@ -113,3 +113,46 @@ async def test_responses_client_sends_the_header(monkeypatch):
             extra_headers={"x-other": "1"},
         )
     assert sent["extra_headers"] == {"x-other": "1", SESSION_AFFINITY_HEADER: "s-9"}
+
+
+@pytest.mark.parametrize("key", [None, "session-7-CodeActV2"])
+def test_completion_client_sync_call_sends_the_header_only_with_a_key(monkeypatch, key):
+    """The synchronous CompletionClient.call path forwards the header too."""
+    sent = {}
+
+    def fake(**kwargs):
+        sent.update(kwargs)
+        return _chat_response()
+
+    monkeypatch.setattr("litellm.completion", fake)
+    client = CompletionClient("openai/nvidia/moonshotai/kimi-k3", api_key="test")
+    try:
+        extra = {"prompt_cache_key": key} if key else {}
+        client.call([{"role": "user", "content": "hi"}], **extra)
+    finally:
+        client.close()
+    if key:
+        assert sent["extra_headers"][SESSION_AFFINITY_HEADER] == key
+    else:
+        assert "extra_headers" not in sent
+
+
+def test_responses_client_sync_call_sends_the_header(monkeypatch):
+    """The synchronous ResponsesClient.call path merges the header into extra_headers."""
+    sent = {}
+
+    def fake(**kwargs):
+        sent.update(kwargs)
+        return _responses_response()
+
+    monkeypatch.setattr("litellm.responses", fake)
+    client = ResponsesClient("openai/nvidia/moonshotai/kimi-k3", api_key="test")
+    try:
+        client.call(
+            [{"role": "user", "content": "hi"}],
+            prompt_cache_key="s-9",
+            extra_headers={"x-other": "1"},
+        )
+    finally:
+        client.close()
+    assert sent["extra_headers"] == {"x-other": "1", SESSION_AFFINITY_HEADER: "s-9"}
