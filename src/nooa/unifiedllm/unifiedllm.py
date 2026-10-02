@@ -2343,7 +2343,7 @@ class ResponsesClient(UnifiedLLM):
 
         if tools:
             api_params["tools"] = [self._convert_tool_to_schema(tool) for tool in tools]
-            api_params.setdefault("tool_choice", "auto")
+            api_params["tool_choice"] = "auto"
             api_params["parallel_tool_calls"] = False
 
         if output_model is not None:
@@ -2425,7 +2425,7 @@ class ResponsesClient(UnifiedLLM):
 
         if tools:
             api_params["tools"] = [self._convert_tool_to_schema(tool) for tool in tools]
-            api_params.setdefault("tool_choice", "auto")
+            api_params["tool_choice"] = "auto"
             api_params["parallel_tool_calls"] = False
 
         if output_model is not None:

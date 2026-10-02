@@ -97,16 +97,8 @@ def _marker_paths(value, path=()):
 @hidden
 def _assert_projected_fork(case, parent, fork):
     key = "input" if case.responses else "messages"
-    # Responses and recognized Anthropic disable tools at the API boundary.
-    # Other Chat routes inherit choice/default to preserve formatting/cache use.
-    if case.responses or case.name == "opus55":
-        expected_choice = "none" if case.responses else {"type": "none"}
-        assert fork["tool_choice"] == expected_choice, "fork did not disable tool use"
-    else:
-        assert ("tool_choice" in fork) == ("tool_choice" in parent)
-        assert fork.get("tool_choice") == parent.get("tool_choice")
-    settings_equal = {k: v for k, v in parent.items() if k not in {key, "tool_choice"}} == {
-        k: v for k, v in fork.items() if k not in {key, "tool_choice"}
+    settings_equal = {k: v for k, v in parent.items() if k != key} == {
+        k: v for k, v in fork.items() if k != key
     }
     assert settings_equal, "fork changed tools/cache key/model/settings on wire"
     summary = fork[key][-1]
@@ -179,8 +171,6 @@ async def _run_summary_agent(case, client, monkeypatch, *, mock_usage=None):
             equal = ctx.messages[:-1] == messages
             assert equal, "fork did not reuse the actual sent parent request"
             expected_params = {**params, "output_model": None}
-            if case.responses or case.name == "opus55":
-                expected_params["tool_choice"] = "none"
             equal = ctx.params == expected_params
             assert equal, "fork changed parent tools/key/settings"
             assert ctx.runtime is runtime, "fork changed policy runtime"

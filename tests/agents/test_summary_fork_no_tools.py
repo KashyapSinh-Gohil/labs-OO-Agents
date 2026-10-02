@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Unsupported Chat routes inherit tool choice but cannot execute summary cells."""
+"""Summary forks inherit tool choice but cannot execute returned Python cells."""
 
 import json
 from unittest.mock import AsyncMock

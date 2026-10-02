@@ -153,10 +153,8 @@ async def exercise_summarization(client, family, monkeypatch):
 
         first, fork, continuation = bodies
         key = "input" if family == "openai" else "messages"
-        expected_choice = "none" if family == "openai" else {"type": "none"}
-        assert fork["tool_choice"] == expected_choice
-        assert {k: v for k, v in first.items() if k not in {key, "tool_choice"}} == {
-            k: v for k, v in fork.items() if k not in {key, "tool_choice"}
+        assert {k: v for k, v in first.items() if k != key} == {
+            k: v for k, v in fork.items() if k != key
         }, "Fork changed request settings"
         if family == "openai":
             assert fork[key][:-1] == first[key], "Fork changed the parent prefix"
