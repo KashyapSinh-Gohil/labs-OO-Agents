@@ -32,20 +32,17 @@ class CacheBoundary(BaseModel):
 
     role: Literal["metadata"] = "metadata"
     nooa_cache_boundary: Literal[True] = True
-    # Internal renderer plan; durable model dumps retain it, public JSON does not.
-    checkpoints_declared: bool = False
-    instructions_checkpoint: bool = False
 
     def __getitem__(self, key: str) -> Any:
-        if key not in ("role", "nooa_cache_boundary"):
+        if key not in type(self).model_fields:
             raise KeyError(key)
         return getattr(self, key)
 
     def __iter__(self):
-        return iter(("role", "nooa_cache_boundary"))
+        return iter(type(self).model_fields)
 
     def __len__(self) -> int:
-        return 2
+        return len(type(self).model_fields)
 
     get = Mapping.get
     keys = Mapping.keys
@@ -54,7 +51,7 @@ class CacheBoundary(BaseModel):
     __contains__ = Mapping.__contains__
 
     def public_message(self) -> dict[str, Any]:
-        return {"role": self.role, "nooa_cache_boundary": True}
+        return self.model_dump()
 
     def render_message(self, content, tool_calls, *, reasoning):
         return self
@@ -487,8 +484,6 @@ class LLMResponse(EventBase):
                 "parsed": None,
                 "metadata": dict(update.get("metadata", self.metadata)),
             }
-        if update and "metadata" in update:
-            update = {**update, "metadata": dict(update["metadata"])}
         result = super().model_copy(update=update, deep=deep)
         if update and "parts" in update:
             result.__dict__.pop("_public_projection", None)

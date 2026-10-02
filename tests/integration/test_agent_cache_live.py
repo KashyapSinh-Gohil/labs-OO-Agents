@@ -29,6 +29,7 @@ with hidden:
     from types import SimpleNamespace
 
     import httpx
+    import litellm
     import pytest
 
     from nooa.events import PythonOutput
@@ -534,6 +535,9 @@ def _live_http_observer(case, monkeypatch):
 @hidden
 async def _check_mock_http_run(case, tmp_path, monkeypatch):
     """Same real client/SDK/runtime/middleware as live, with hermetic HTTP replies."""
+    # Other modules set this process-global flag during collection. Keep the
+    # offline wire contract independent without changing live configuration.
+    monkeypatch.setattr(litellm, "drop_params", False)
     bodies = []
     observer = _install_wire_observer(case, monkeypatch)
 
@@ -621,6 +625,19 @@ async def _check_mock_http_run(case, tmp_path, monkeypatch):
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.name)
 async def test_agent_cache_matrix_mock_http(case, tmp_path, monkeypatch):
     await _check_mock_http_run(case, tmp_path, monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_agent_cache_mock_http_restores_prior_drop_params(tmp_path, monkeypatch):
+    monkeypatch.setattr(litellm, "drop_params", True)
+    with monkeypatch.context() as scoped:
+        # The helper checks output_config={"effort": "low"} on all four Opus
+        # HTTP bodies; drop_params=True would silently remove that parameter.
+        await _check_mock_http_run(
+            next(case for case in CASES if case.name == "opus55"), tmp_path, scoped
+        )
+        assert litellm.drop_params is False
+    assert litellm.drop_params is True
 
 
 @pytest.mark.asyncio

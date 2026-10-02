@@ -174,7 +174,7 @@ class TestNestedAgentHistoryBug:
         # compare only the stable history before it.
         assert inner_prefix[-1]["role"] == "user"
         assert inner_prefix[-1]["content"].startswith("<context>")
-        assert inner_prefix[-2] == CacheBoundary(checkpoints_declared=True)
+        assert inner_prefix[-2] == CacheBoundary()
         inner_prefix = inner_prefix[:-2]
         assert outer_suffix[: len(inner_prefix)] == inner_prefix
 

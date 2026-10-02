@@ -33,7 +33,6 @@ Requirements:
 from __future__ import annotations
 
 import asyncio
-import copy
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -50,15 +49,6 @@ from nooa.runtime.middleware import (
 _logger = logging.getLogger(__name__)
 
 
-def _relay_message(message):
-    """Public JSON deliberately omits request-only checkpoint metadata."""
-    if isinstance(message, (LLMResponse, CacheBoundary)):
-        return message.public_message()
-    # Intercepts may edit nested blocks in place. Detached containers keep
-    # comparison against the original meaningful and prevent history mutation.
-    return copy.deepcopy({k: v for k, v in message.items() if k != "nooa_cache_checkpoint"})
-
-
 def _reconcile_messages(originals, public):
     """Only unchanged JSON entries at the same position recover their turn.
 
@@ -68,11 +58,8 @@ def _reconcile_messages(originals, public):
     return [
         originals[index]
         if index < len(originals)
-        and (
-            isinstance(originals[index], (LLMResponse, CacheBoundary))
-            or "nooa_cache_checkpoint" in originals[index]
-        )
-        and message == _relay_message(originals[index])
+        and isinstance(originals[index], (LLMResponse, CacheBoundary))
+        and message == originals[index].public_message()
         else message
         for index, message in enumerate(public)
     ]
@@ -200,7 +187,10 @@ async def nemo_relay_llm_middleware(
         if k not in _SENSITIVE_KEYS and k not in _NON_SERIALIZABLE_KEYS
     }
     original_messages = list(ctx.messages)
-    safe_params["messages"] = [_relay_message(message) for message in original_messages]
+    safe_params["messages"] = [
+        dict(message) if isinstance(message, (LLMResponse, CacheBoundary)) else message
+        for message in original_messages
+    ]
     # Tools are excluded via _NON_SERIALIZABLE_KEYS.  Do NOT re-add them:
     # including a "tools" key in request.content triggers an AttributeError
     # ('dict' object has no attribute 'name') inside NeMo Relay's native pipeline.

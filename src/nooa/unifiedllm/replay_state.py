@@ -337,8 +337,6 @@ def prepare_chat_messages(
                     for key in ("thinking_blocks", "reasoning_items", "provider_specific_fields")
                 )
             ):
-                if original.metadata.get("nooa_cache_checkpoint"):
-                    message["nooa_cache_checkpoint"] = True
                 prepared.append(message)
             continue
         if isinstance(original, CacheBoundary):

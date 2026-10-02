@@ -284,10 +284,6 @@ class RenderedMessage(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     replay_message: Any = Field(default=None, exclude=True, repr=False)
-    cache_checkpoint: bool = Field(
-        default=False,
-        description="Reusable prefix endpoint intent, not provider cache warmth or state",
-    )
 
     role: Role = Field(description="Message role (SYSTEM / USER / ASSISTANT / TOOL)")
     content: str | None = Field(

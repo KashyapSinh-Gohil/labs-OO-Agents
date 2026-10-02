@@ -83,8 +83,7 @@ class CachedBlockFormatter(BlockFormatter):
 
     A standalone CacheBoundary separates history from live context. Its position
     is decided here; the provider formatter passes the object through unchanged.
-    Prefix messages carry provider-neutral checkpoint intent only when a suffix
-    exists. UnifiedLLM maps that intent to eligible provider input endpoints.
+    Only UnifiedLLM interprets it when preparing the provider request.
     """
 
     @property
@@ -146,16 +145,7 @@ class CachedBlockFormatter(BlockFormatter):
             # caching for the entire event tail (issue #208).
             from nooa.llm_types import CacheBoundary
 
-            # Declare every neutral prefix candidate. Provider projection decides
-            # eligibility and its budget; assistant fan-out must not consume the
-            # input endpoint window. No suffix means no checkpoint plan.
-            messages = [msg.model_copy(update={"cache_checkpoint": True}) for msg in messages]
-            messages.append(
-                RenderedMessage(
-                    role=Role.METADATA,
-                    replay_message=CacheBoundary(checkpoints_declared=True),
-                )
-            )
+            messages.append(RenderedMessage(role=Role.METADATA, replay_message=CacheBoundary()))
             messages.append(
                 RenderedMessage(
                     role=Role.USER,

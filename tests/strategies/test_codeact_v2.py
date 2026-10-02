@@ -273,15 +273,7 @@ async def test_text_only_retry_preserves_response_and_uses_python_cell():
     agent = TestAgent()
     assert await agent.answer() == 42
     assert agent.event_manager[original.id] is original
-    replayed = next(
-        message
-        for message in llm.request_messages
-        if isinstance(message, LLMResponse) and message.id == original.id
-    )
-    assert replayed.parts is original.parts
-    assert replayed.replay_scope == original.replay_scope
-    assert replayed.metadata["nooa_cache_checkpoint"] is True
-    assert "nooa_cache_checkpoint" not in original.metadata
+    assert any(message is original for message in llm.request_messages)
     assert dict(original.parts[0].native) == {"opaque": "retained"}
     feedback = [
         message["content"]

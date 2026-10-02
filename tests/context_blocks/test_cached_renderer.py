@@ -115,7 +115,7 @@ class TestCachedRendererEndToEndOpenAI:
             provider_formatter=OpenAIProviderFormatter(),
         ).output
         assert len(result) == 3
-        assert result[1] == CacheBoundary(checkpoints_declared=True)
+        assert result[1] == CacheBoundary()
         assert result[0]["role"] == "system"
         assert "<sys>" in result[0]["content"]
         assert result[-1]["role"] == "user"
@@ -276,13 +276,10 @@ class TestCachedRendererEndToEndOpenAI:
 
         # The last two entries are the boundary metadata and changing live state;
         # compare every history message before them, including the latest user.
-        assert first[-2] == CacheBoundary(checkpoints_declared=True)
+        assert first[-2] == CacheBoundary()
         assert first[:-2] == second[: len(first) - 2]
         assert first[-1] != second[-1]
-        assert second[2] is not turn  # deliberate request-only metadata copy
-        assert second[2].parts is turn.parts
-        assert second[2].metadata == {**turn.metadata, "nooa_cache_checkpoint": True}
-        assert "nooa_cache_checkpoint" not in turn.metadata
+        assert second[2] is turn
         assert "native" not in json.dumps([dict(message) for message in second])
         assert "version two" in second[-1]["content"]
 

@@ -84,7 +84,7 @@ def _responses_output() -> SimpleNamespace:
 def test_cached_renderer_passes_a_typed_boundary_with_a_public_json_view() -> None:
     messages = _render("state-a")
 
-    assert messages[-2] == CacheBoundary(checkpoints_declared=True)
+    assert messages[-2] == CacheBoundary()
     assert "nooa_cache_boundary" not in messages[-1]
     assert "state-a" in messages[-1]["content"]
     assert json.loads(json.dumps([dict(m) for m in messages]))[-2] == dict(messages[-2])
@@ -111,8 +111,8 @@ def test_boundary_has_the_same_sdk_and_mapping_surface_as_its_public_dict():
     boundary = CacheBoundary()
     public = {"role": "metadata", "nooa_cache_boundary": True}
     assert isinstance(boundary, Mapping)
-    assert dict(boundary) == boundary.public_message() == public
-    assert CacheBoundary.model_validate_json(boundary.model_dump_json()) == boundary
+    assert dict(boundary) == boundary.model_dump() == public
+    assert json.loads(boundary.model_dump_json()) == public
     assert list(boundary.items()) == list(public.items())
     assert list(boundary.values()) == list(public.values())
     assert "content" not in boundary
@@ -507,8 +507,6 @@ async def test_openai_fields_reach_the_serialized_http_body(stable_prefix: bool)
             {"role": "user", "content": [{"type": "input_text", "text": "changing state"}]}
         ]
     assert "cache_boundary" not in repr(bodies[0])
-    assert "nooa_cache_checkpoint" not in repr(bodies[0])
-    assert "checkpoints_declared" not in repr(bodies[0])
     assert response.usage is not None
     assert response.usage.cached_input_tokens == 500
     assert response.usage.cache_write_input_tokens == 250
@@ -564,8 +562,6 @@ async def test_anthropic_breakpoint_survives_user_message_coalescing() -> None:
     assert bodies[1]["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert "state-b" in bodies[1]["messages"][0]["content"][0]["text"]
     assert "cache_control" not in bodies[1]["messages"][0]["content"][0]
-    assert "nooa_cache_checkpoint" not in repr(bodies)
-    assert "checkpoints_declared" not in repr(bodies)
 
 
 @pytest.mark.asyncio

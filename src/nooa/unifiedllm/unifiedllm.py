@@ -2505,16 +2505,9 @@ class ResponsesClient(UnifiedLLM):
         instructions: list[str] = []
         transformed: list[dict[str, Any] | CacheBoundary] = []
         leading_system = True
-        instructions_checkpoint = True
         for original in messages:
             if not isinstance(original, Mapping):
                 raise TypeError("Each message must be a mapping or LLMResponse.")
-            start = len(transformed)
-            checkpoint = (
-                original.metadata.get("nooa_cache_checkpoint", False)
-                if isinstance(original, LLMResponse)
-                else original.get("nooa_cache_checkpoint", False)
-            )
             # Moving a later system message to instructions would reorder history.
             leading_system = leading_system and original.get("role") == "system"
             if isinstance(original, LLMResponse):
@@ -2525,19 +2518,11 @@ class ResponsesClient(UnifiedLLM):
                         native_encrypted_reasoning=native_encrypted_reasoning,
                     )
                 )
-                if checkpoint:
-                    for item in transformed[start:]:
-                        item["nooa_cache_checkpoint"] = True
                 continue
             if isinstance(original, CacheBoundary):
-                transformed.append(
-                    original.model_copy(update={"instructions_checkpoint": instructions_checkpoint})
-                    if original.checkpoints_declared
-                    else original
-                )
+                transformed.append(original)
                 continue
             msg = dict(original)
-            msg.pop("nooa_cache_checkpoint", None)
             reject_boundary_dict(msg)
             replay_state.reject_native_message(msg, state_scope)
             if isinstance(msg.get("content"), list) and any(
@@ -2558,9 +2543,6 @@ class ResponsesClient(UnifiedLLM):
                     content = "".join(block["text"] for block in content)
                 if content:
                     instructions.append(content)
-                    # Instructions are joined into one provider block. A mixed
-                    # hinted/unhinted run cannot declare that whole block stable.
-                    instructions_checkpoint = instructions_checkpoint and bool(checkpoint)
             elif msg.get("role") == "tool":
                 if not isinstance(msg.get("tool_call_id"), str):
                     raise ValueError("Tool result requires a string 'tool_call_id'.")
@@ -2672,9 +2654,6 @@ class ResponsesClient(UnifiedLLM):
                     # string wrap) whenever apply_cache_policy marked it.
                     item["output"] = [wrap_responses_text(item["output"])]
                 transformed.append(item)
-            if checkpoint:
-                for item in transformed[start:]:
-                    item["nooa_cache_checkpoint"] = True
         return transformed, "\n\n".join(instructions) or None
 
     def _extract_text_from_output(self, response: Any) -> str:

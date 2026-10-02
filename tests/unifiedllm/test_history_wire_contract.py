@@ -21,7 +21,7 @@ from nooa.context_blocks.renderer import render_context
 from nooa.context_blocks.renderers.cached import CachedBlockFormatter
 from nooa.nemo_relay_middleware import _reconcile_messages
 from nooa.storage import SQLiteStorageManager
-from nooa.unifiedllm import CompletionClient, LLMResponse, ResponsesClient, Tool
+from nooa.unifiedllm import CompletionClient, ResponsesClient, Tool
 from nooa.unifiedllm.retry_config import RetryConfig
 from nooa.unifiedllm.unifiedllm import _ClientHttp
 
@@ -209,10 +209,7 @@ def _resume(turn, path):
 def _relay(messages):
     # Exercise the production reconcile seam; the real Rust relay round trip
     # itself is already covered by test_nemo_relay_middleware.py.
-    from nooa.nemo_relay_middleware import _relay_message
-
-    public = json.loads(json.dumps([_relay_message(message) for message in messages]))
-    assert "nooa_cache_checkpoint" not in json.dumps(public)
+    public = json.loads(json.dumps([dict(message) for message in messages]))
     assert SECRET not in json.dumps(public)
     return _reconcile_messages(messages, public)
 
@@ -310,12 +307,7 @@ async def test_history_roundtrip_preserves_actual_http_prefix(
     messages = _render(restored, "after")
     if "relay" in roundtrip:
         messages = _relay(messages)
-    retained = next(message for message in messages if isinstance(message, LLMResponse))
-    assert retained is not restored  # request-only checkpoint metadata copy
-    assert retained.parts is restored.parts
-    assert retained.replay_scope == restored.replay_scope
-    assert retained.metadata == {**restored.metadata, "nooa_cache_checkpoint": True}
-    assert "nooa_cache_checkpoint" not in restored.metadata
+    assert any(message is restored for message in messages)
     # A fresh client also guards against accidentally relying on transient SDK state.
     async with _client(family) as client:
         await _send(client, messages, asynchronous)
