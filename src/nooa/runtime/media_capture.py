@@ -20,6 +20,8 @@ import contextvars
 import io
 from typing import Any
 
+from nooa.unifiedllm.media_inputs import MediaInputs, attachment_kind, validate_media_inputs
+
 
 class _MediaBuffer:
     """Bounded collector of media content blocks captured by ``show()``.
@@ -33,9 +35,32 @@ class _MediaBuffer:
     ``MediaCaptureConfig.max_attachments_per_execution``.
     """
 
-    def __init__(self, max_attachments: int):
+    def __init__(self, max_attachments: int, *, media_inputs: MediaInputs | None = None):
+        # None is an explicitly unbound low-level collector, not a model policy.
+        # ActorRuntime always binds a declaration (absent means text-only).
+        self.media_inputs = None if media_inputs is None else validate_media_inputs(media_inputs)
         self.blocks: list[dict[str, Any]] = []
         self.max_attachments = max_attachments
+
+    def check_permission(self, block: dict[str, Any]) -> None:
+        """Reject disabled attachments before capture or a success acknowledgement."""
+        kind = attachment_kind(block)
+        if self.media_inputs is not None and kind is not None and kind not in self.media_inputs:
+            if kind == "file":
+                raise ValueError(
+                    "Cannot show file: only PDF files with MIME type application/pdf are "
+                    "supported as file input. Use a PDF and enable media_inputs: [pdf] in "
+                    "this model's llm_config.yaml entry (include any other inputs you want "
+                    "to keep), or select PDF with nooa connect. For a Python client pass "
+                    'media_inputs=["pdf"]. Only enable types your endpoint supports.'
+                )
+            raise ValueError(
+                f"Cannot show {kind}: {kind} input is not enabled for the current model. "
+                f"Add media_inputs: [{kind}] to this model's llm_config.yaml entry "
+                "(include any other inputs you want to keep), or select it with nooa connect. "
+                f'For a Python client pass media_inputs=["{kind}"]. '
+                "Only enable types your endpoint supports."
+            )
 
     def append(self, block: dict[str, Any]) -> bool:
         """Append ``block``. Returns ``False`` if the buffer is full."""
@@ -92,7 +117,11 @@ def media_to_content_block(media: Any) -> dict[str, Any]:
         # LiteLLM file format
         return {
             "type": "file",
-            "file": {"file_data": media.data_url, "filename": "attachment"},
+            "file": {
+                "file_data": media.data_url,
+                "filename": "attachment",
+                **({"format": media.media_type} if media.media_type else {}),
+            },
         }
 
     # Generic fallback for unknown Media subclasses
@@ -108,6 +137,9 @@ def show(obj: Any) -> None:
 
     Call show() on any Image, Audio, Video, or File object to perceive its contents.
     Also accepts PIL images and matplotlib figures (auto-converted to PNG).
+    In model execution, raises ValueError if the current client's explicit
+    media_inputs declaration does not enable the attachment category. Outside
+    execution (or with an unbound low-level collector), no model policy applies.
     """
     from nooa.media import Media
 
@@ -125,6 +157,7 @@ def show(obj: Any) -> None:
 
     buf = _media_buffer_var.get()
     if buf is not None:
+        buf.check_permission(block)
         if not buf.append(block):
             print(f"[show() limit reached ({buf.max_attachments}), attachment not added]")
             return

@@ -26,7 +26,7 @@ def mock_post(monkeypatch, post):
     mock_http(monkeypatch, handle)
 
 
-def response_body(style, text="323"):
+def response_body(style, text='{"value":323}'):
     common = {"id": "test-response", "model": "model"}
     if style == "responses":
         return {

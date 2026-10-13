@@ -35,7 +35,14 @@ import yaml
 
 from nooa.unifiedllm.limits import REPLY_CAP_KEYS
 
-from ._records import ProbeRecord, check_status, public_record
+from ._records import (
+    TYPED_TEXT_BASELINE,
+    ProbeRecord,
+    check_status,
+    public_record,
+    text_baseline_passed,
+    text_baseline_reason,
+)
 
 CATALOGUE_URL = "https://openrouter.ai/api/v1/models"
 # Effectively unlimited: no real check plan approaches this, so an unset
@@ -106,6 +113,7 @@ def _disable_encrypted_reasoning(entry: dict, status: int) -> dict:
 
 
 _RESERVED = {
+    "media_inputs",
     "model",
     "messages",
     "input",
@@ -167,6 +175,9 @@ class Probe:
     token_estimate: int
     timeout_seconds: float = 30
     uses_configured_cap: bool = True
+    input_reservation: int = 512
+    expected_answer: str | None = None
+    skip_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -598,13 +609,19 @@ def configure_entry(entry: dict, *, reply_tokens: int | None = None) -> dict:
                 reject_credentials(child)
 
     reject_credentials(entry)
+    from nooa.unifiedllm.media_inputs import validate_media_inputs
+
     result = deepcopy(entry)
+    result["media_inputs"] = list(validate_media_inputs(result.get("media_inputs")))
+    for patch in (result.get("reasoning_levels") or {}).values():
+        if "media_inputs" in patch or "media_inputs" in (patch.get("extra_body") or {}):
+            raise ValueError("media_inputs belongs on the connection, not a reasoning level")
     result.setdefault("transport", "direct")
     extra = result.get("extra_body") or {}
     if not isinstance(extra, dict):
         raise ValueError("extra_body must be a mapping")
     responses = result.get("api_style") == "responses" or result.get("client_type") == "responses"
-    managed = {"max_tokens", "max_output_tokens", "max_completion_tokens"}
+    managed = {"max_tokens", "max_output_tokens", "max_completion_tokens", "media_inputs"}
     if responses:
         managed |= {"include", "store"}
     if managed & extra.keys():
@@ -809,7 +826,9 @@ def refresh_plan(proposal: ConnectPlan) -> ConnectPlan:
             for k in ("store", "include"):
                 if k in entry:
                     body[k] = deepcopy(entry[k])
-            probe = replace(probe, body=body, token_estimate=512 + cap, timeout_seconds=120)
+            probe = replace(
+                probe, body=body, token_estimate=probe.input_reservation + cap, timeout_seconds=120
+            )
         probes.append(probe)
     estimate = sum(p.token_estimate for p in probes)
     if proposal.session_checks:
@@ -841,13 +860,17 @@ def plan(
     existing_entry: dict | None = None,
     session_checks: bool = False,
     reply_tokens: int | None = None,
+    media_inputs: list[str] | tuple[str, ...] | None = None,
+    test_media_inputs: list[str] | tuple[str, ...] | None = None,
 ) -> ConnectPlan:
     """Prepare requests without reading credentials, files or network resources.
 
     ``model`` is the exact endpoint model ID, without a LiteLLM prefix. The
     returned entry adds the prefix needed by today's runtime. Each request reserves
-    its output cap plus 512 estimated input tokens. Reported usage can increase
-    that charge. Servers can ignore caps, so this is not a billing limit.
+    its output cap plus 512 estimated input tokens (4,096 for selected generated
+    media samples). Reported usage can increase that charge. Servers can ignore
+    caps, so this is not a billing limit. Media facts never change declarations.
+    Non-Chat video and audio remain transparently not tested.
     """
     if api_style not in _PATHS:
         raise ValueError("api_style must be chat, responses or anthropic")
@@ -865,9 +888,19 @@ def plan(
         raise ValueError("output_tokens must be 1..4096 and budget_tokens must be positive")
     if not 1 <= reasoning_output_tokens <= 32768:
         raise ValueError("reasoning_output_tokens must be 1..32768")
+    from nooa.unifiedllm.media_inputs import validate_media_inputs
+
+    tested_media = validate_media_inputs(test_media_inputs)
     vendor = "anthropic" if api_style == "anthropic" else "openai"
     entry: dict[str, Any] = {
         "model_name": f"{vendor}/{model}",
+        "media_inputs": list(
+            validate_media_inputs(
+                existing_entry.get("media_inputs")
+                if media_inputs is None and existing_entry
+                else media_inputs
+            )
+        ),
         "client_type": "responses" if api_style == "responses" else "completion",
         "api_style": api_style,
         # The Messages runtime adds /v1/messages; Chat/Responses expect an API base.
@@ -1002,6 +1035,24 @@ def plan(
         )
         level_body.update(params)
         probes.append(Probe(f"level:{label}", level_body, reasoning_output_tokens + 512, 120))
+    from ._media import media_content
+
+    for kind in tested_media:
+        content, expected, skip = media_content(kind, api_style)
+        media_body = deepcopy(body)
+        media_body["input" if api_style == "responses" else "messages"][0]["content"] = (
+            content or ""
+        )
+        probes.append(
+            Probe(
+                f"media:{kind}",
+                media_body,
+                output_tokens + 4096,
+                input_reservation=4096,
+                expected_answer=expected,
+                skip_reason=skip,
+            )
+        )
     entry["provenance"] = provenance
     if reply_tokens is None:
         recommendation = ((catalogue or {}).get("default_parameters") or {}).get("max_tokens")
@@ -1044,8 +1095,9 @@ def plan(
             rates = [float(catalogue["pricing"][key]) for key in ("prompt", "completion")]
             if all(math.isfinite(rate) and rate >= 0 for rate in rates):
                 price = (
-                    len(probes) * 512 * rates[0]
-                    + sum(probe.token_estimate - 512 for probe in probes) * rates[1]
+                    sum(probe.input_reservation for probe in probes) * rates[0]
+                    + sum(probe.token_estimate - probe.input_reservation for probe in probes)
+                    * rates[1]
                 )
         except (ValueError, TypeError, KeyError):
             pass  # Missing catalogue prices are unknown, never zero.
@@ -1094,20 +1146,90 @@ async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None)
         params["reasoning_level"] = label
     client = client_from_config(
         alias,
-        entry,
+        {**entry, "media_inputs": [probe.name[6:]]} if probe.name.startswith("media:") else entry,
         api_key=api_key,
         retry_config=RetryConfig(max_retries=0, rate_limit_extra_retries=0),
         num_retries=0,
+        timeout=probe.timeout_seconds,
         http_config=HttpConfig(read_timeout=probe.timeout_seconds),
     )
+    typed_media_check = probe.name.startswith("media:")
+    typed = (probe.name == "routing" and probe.uses_configured_cap) or typed_media_check
     settings_sent = []
+    attachments_sent = []
+    output_settings_sent = []
     response_status = []
+    reply_evidence = {}
+    send_started = False
 
     async def capture_status(response):
         response_status.append(response.status_code)
+        if typed_media_check and response.is_success:
+            # Keep envelope facts even when native schema validation fails.
+            # Never parse/score the answer here or retain provider reply text.
+            await response.aread()
+            try:
+                body = response.json()
+                from nooa.llm_types import LLMUsage
+
+                usage = LLMUsage.from_provider(body.get("usage"))
+                if usage:
+                    reply_evidence.update(
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        reasoning_tokens=usage.reasoning_tokens,
+                        reported_tokens=usage.input_tokens + usage.output_tokens,
+                    )
+                if "choices" in body:
+                    choice = body["choices"][0]
+                    finish = choice.get("finish_reason")
+                    final = choice.get("message", {}).get("content")
+                elif body.get("type") == "message":
+                    finish = {
+                        "end_turn": "stop",
+                        "max_tokens": "length",
+                        "tool_use": "tool_calls",
+                    }.get(body.get("stop_reason"), "error")
+                    final = "".join(
+                        b.get("text", "")
+                        for b in body.get("content", [])
+                        if b.get("type") == "text"
+                    )
+                elif body.get("object") == "response":
+                    finish = (
+                        "stop"
+                        if body.get("status") == "completed"
+                        else "length"
+                        if body.get("status") == "incomplete"
+                        else "error"
+                    )
+                    final = "".join(
+                        b.get("text", "")
+                        for m in body.get("output", [])
+                        if m.get("type") == "message" and m.get("status") == "completed"
+                        for b in m.get("content", [])
+                        if b.get("type") == "output_text"
+                    )
+                else:
+                    raise ValueError("Unrecognized response envelope")
+                reply_evidence["finish_reason"] = (
+                    finish
+                    if finish in {"stop", "length", "tool_calls", "content_filter"}
+                    else "error"
+                )
+                reply_evidence["final_answer_observed"] = isinstance(final, str) and bool(
+                    final.strip()
+                )
+            except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+                pass
 
     async def capture(request):
+        nonlocal send_started
         from nooa.unifiedllm.connect._session import settings_on_wire
+
+        if typed and send_started:
+            raise RuntimeError("Configured typed check permits only one outbound send")
+        send_started = True
 
         expected = {k: v for k, v in probe.body.items() if k in REPLY_CAP_KEYS}
         if probe.name.startswith("level:"):
@@ -1115,7 +1237,43 @@ async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None)
                 **{k: v for k, v in settings.items() if k not in REPLY_CAP_KEYS},
                 **expected,
             }
-        settings_sent.append(settings_on_wire(expected, json.loads(request.content)))
+        if typed:
+            # Resolve the same defaults/selected effort as the impending native
+            # call. Observe request settings, not catalogue/declaration metadata.
+            resolved = client._prepare_call_config({})
+            selected_level = entry.get("reasoning_level", client.reasoning_level)
+            selected_settings = entry.get("reasoning_levels", {}).get(selected_level, {})
+            expected = {
+                **{
+                    k: resolved[k]
+                    for k in (
+                        "temperature",
+                        "top_p",
+                        "reasoning",
+                        "reasoning_effort",
+                        "store",
+                        "include",
+                        *REPLY_CAP_KEYS,
+                    )
+                    if k in resolved
+                },
+                **{
+                    k: v
+                    for k, v in selected_settings.items()
+                    if k not in REPLY_CAP_KEYS and k != "extra_body"
+                },
+                **(resolved.get("extra_body") or {}),
+            }
+        wire = json.loads(request.content)
+        observed = settings_on_wire(expected, wire)
+        output_settings_sent.append(observed)
+        if probe.name.startswith("media:"):
+            from ._media import media_on_wire
+
+            attachment = media_on_wire(probe.name[6:], probe.body, wire)
+            attachments_sent.append(attachment)
+            observed = observed and attachment
+        settings_sent.append(observed)
 
     hooks = client._http.httpx_async.event_hooks["request"]
     response_hooks = client._http.httpx_async.event_hooks["response"]
@@ -1123,11 +1281,46 @@ async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None)
     response_hooks.append(capture_status)
     try:
         params["timeout"] = probe.timeout_seconds
-        response = await client.acall(messages=messages, **params)
+        if typed:
+            from ._baseline import typed_baseline
+
+            resolved = client._prepare_call_config({})
+            effective = {**resolved, **(resolved.get("extra_body") or {})}
+            caps = [effective[k] for k in REPLY_CAP_KEYS if k in effective]
+            if caps != [configured_reply_cap(entry)]:
+                raise ValueError("Configured baseline reply cap differs from the approved cap")
+            if effective.get("stream") or any(effective.get(k, 1) != 1 for k in ("n", "best_of")):
+                raise ValueError("Configured baseline requires one non-streaming generation")
+            if typed_media_check:
+                from ._typed_media import typed_media
+
+                response, result = await typed_media(client, probe.name[6:])
+            else:
+                response, result = await typed_baseline(client)
+            response.parsed = result  # Transient native method result, never persisted.
+        else:
+            response = await client.acall(messages=messages, **params)
         transport = getattr(client, "transport", "litellm")
         observed = (len(settings_sent) == 1 and all(settings_sent)) if settings_sent else None
+        response.metadata["connect_evidence"] = {
+            **reply_evidence,
+            "request_accepted": bool(response_status and 200 <= response_status[-1] < 300),
+            "attachment_observed": len(attachments_sent) == 1 and all(attachments_sent),
+            "output_settings_observed": len(output_settings_sent) == 1
+            and all(output_settings_sent),
+        }
         return response, observed, transport
     except Exception as exc:
+        exc._connect_evidence = {
+            **reply_evidence,
+            "settings_sent": (len(settings_sent) == 1 and all(settings_sent))
+            if settings_sent
+            else None,
+            "request_accepted": bool(response_status and 200 <= response_status[-1] < 300),
+            "attachment_observed": len(attachments_sent) == 1 and all(attachments_sent),
+            "output_settings_observed": len(output_settings_sent) == 1
+            and all(output_settings_sent),
+        }
         if response_status:
             # LiteLLM can label a malformed HTTP-200 response as a 422 error.
             # Keep the observed status distinct from that local translation.
@@ -1161,13 +1354,20 @@ async def check_stage(
     explicitly approves that stage within the plan's existing limits. Results
     retain other stages' provenance, but selected checks never reuse old evidence.
     """
-    if stage not in {"routing", "tools", "reasoning", "session", "all"}:
+    if stage not in {"routing", "tools", "reasoning", "media", "session", "all"}:
         raise ValueError("Unknown check stage")
     probes = tuple(
         p
         for p in proposal.probes
-        if stage == "all" or p.name == stage or stage == "reasoning" and p.name.startswith("level:")
+        if stage == "all"
+        or p.name == stage
+        or stage == "reasoning"
+        and p.name.startswith("level:")
+        or stage == "media"
+        and (p.name == "routing" or p.name.startswith("media:"))
     )
+    if stage == "media" and not any(p.name.startswith("media:") for p in probes):
+        raise ValueError("Media stage requires explicit test_media_inputs")
     if stage == "reasoning" and not probes:
         raise ValueError("No reasoning levels configured; provide a reasoning_levels mapping")
     entry = configure_entry(proposal.entry)
@@ -1313,6 +1513,15 @@ async def run_steps(
             and previous.get("request") == probe.body
             and previous.get("client") == "unifiedllm"
             and previous.get("settings_sent") is True
+            and (
+                probe.name != "routing"
+                or not probe.uses_configured_cap
+                and previous.get("baseline_kind") == "interface_acceptance"
+                or probe.uses_configured_cap
+                and text_baseline_passed(previous)
+                and previous.get("baseline_config")
+                == {k: v for k, v in entry.items() if k != "provenance"}
+            )
         ):
             if probe.name == "routing" and entry.get("include"):
                 provenance.setdefault("encrypted_reasoning", {})["outcome"] = "accepted"
@@ -1326,6 +1535,14 @@ async def run_steps(
             record["reason"] = "not approved"
             yield ProbeUpdate(probe.name, deepcopy(record))
             continue
+        if probe.name.startswith("media:"):
+            baseline = records.get("routing", {})
+            if probe.skip_reason or not text_baseline_passed(baseline):
+                record["reason"] = (
+                    probe.skip_reason or text_baseline_reason(baseline) + "; media not tested"
+                )
+                yield ProbeUpdate(probe.name, deepcopy(record))
+                continue
         if stopped or spent + probe.token_estimate > proposal.budget_tokens:
             record["reason"] = "previous check failed" if stopped else "budget exhausted"
             yield ProbeUpdate(probe.name, deepcopy(record))
@@ -1361,7 +1578,7 @@ async def run_steps(
             not isinstance(cap, int)
             or isinstance(cap, bool)
             or cap < 1
-            or cap > probe.token_estimate - 512
+            or cap > probe.token_estimate - probe.input_reservation
             for cap in caps
         ):
             record["reason"] = "declared output cap exceeds the approved probe cap"
@@ -1510,8 +1727,34 @@ async def run_steps(
                 record.update(
                     outcome="not_confirmed", reason="Reply not understood (ReasoningReplayError)"
                 )
+            if probe.name == "routing" and probe.uses_configured_cap:
+                record.update(
+                    baseline_kind=TYPED_TEXT_BASELINE,
+                    typed_result_validated=False,
+                    answer_correct=False,
+                )
+                if status is None or 200 <= status < 300:
+                    record["outcome"] = "not_confirmed"
+                record.setdefault("reason", "Text baseline did not return a validated integer")
+            if probe.name.startswith("media:"):
+                from ._media import exception_reason, explicitly_rejected
+
+                record.update(getattr(exc, "_connect_evidence", {}))
+                if record.get("timeout_kind"):
+                    record["request_accepted"] = False
+                record.update(typed_result_validated=False)
+                record.setdefault("final_answer_observed", False)
+                record["outcome"] = (
+                    "rejected" if explicitly_rejected(exc, probe.name[6:]) else "inconclusive"
+                )
+                record["reason"] = (
+                    "Provider explicitly rejected this media request"
+                    if record["outcome"] == "rejected"
+                    else exception_reason(record, probe.name[6:], exc)
+                )
             if (
                 probe.name == "routing"
+                and not probe.uses_configured_cap
                 and entry.get("include") == ["reasoning.encrypted_content"]
                 and _include_rejected(exc)
             ):
@@ -1521,6 +1764,7 @@ async def run_steps(
                 pending.appendleft(probe)
                 yield ProbeUpdate(probe.name, deepcopy(record))
                 continue
+            spent += max(0, record.get("reported_tokens", 0) - probe.token_estimate)
             stopped = probe.name == "routing" or status in {401, 403}
             yield ProbeUpdate(probe.name, deepcopy(record))
             continue
@@ -1554,6 +1798,51 @@ async def run_steps(
                 if settings_sent is None
                 else "Configured reply cap or settings missing from the actual request",
             )
+        if probe.name == "routing":
+            if probe.uses_configured_cap:
+                record.update(
+                    baseline_kind=TYPED_TEXT_BASELINE,
+                    baseline_config=deepcopy({k: v for k, v in entry.items() if k != "provenance"}),
+                    typed_result_validated=type(response.parsed) is int,
+                    answer_correct=type(response.parsed) is int and response.parsed == 323,
+                    final_answer_observed=bool((response.content or "").strip()),
+                )
+                record["reason"] = text_baseline_reason(record)
+                if not text_baseline_passed(record):
+                    record["outcome"] = "not_confirmed"
+                    stopped = True
+            else:
+                record["baseline_kind"] = "interface_acceptance"
+        if probe.name.startswith("media:"):
+            from ._media import reply_failure_reason
+
+            record.update(response.metadata.get("connect_evidence", {}))
+            record.update(
+                typed_result_validated=type(response.parsed) is bool,
+                final_answer_observed=bool((response.content or "").strip())
+                and record.get("final_answer_observed", True),
+            )
+            if type(response.parsed) is bool:
+                record["access_reported"] = response.parsed
+            complete = (
+                record["typed_result_validated"]
+                and settings_sent is True
+                and record["finish_reason"] == "stop"
+                and record["final_answer_observed"]
+                and record.get("request_accepted") is True
+                and record.get("attachment_observed") is True
+                and record.get("output_settings_observed") is True
+            )
+            if complete:
+                record["outcome"] = "passed" if record["access_reported"] else "unavailable"
+                record["reason"] = (
+                    "Model reported access to this input"
+                    if record["access_reported"]
+                    else "Model cannot access this input"
+                )
+            else:
+                record["outcome"] = "inconclusive"
+                record["reason"] = reply_failure_reason(probe.name[6:], record)
         if probe.name.startswith("level:"):
             # Score only the public final answer, never retain reasoning/reply text.
             # Correctness is separate from evidence that a setting was obeyed.
