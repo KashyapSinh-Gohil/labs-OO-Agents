@@ -136,9 +136,12 @@ async def test_exact_pdf_and_unknown_files(obj, kind, allowed):
         assert attachment_kind(result.images[0]) == kind
     else:
         assert isinstance(result.error, ValueError)
-        assert "file input" in str(result.error)
-        assert "application/pdf" in str(result.error)
-        assert "media_inputs: [pdf]" in str(result.error)
+        if isinstance(obj, Image):
+            assert "known MIME metadata does not match" in str(result.error)
+        else:
+            assert "file input" in str(result.error)
+            assert "application/pdf" in str(result.error)
+            assert "media_inputs: [pdf]" in str(result.error)
         assert "media_inputs: [file]" not in str(result.error)
         assert "[shown:" not in result.stdout
 
@@ -285,11 +288,11 @@ async def test_prefill_auto_show_obeys_policy(enabled):
     outputs = [e for e in agent.event_manager.values() if isinstance(e, PythonOutput)]
     prefill = outputs[0]
     assert bool(prefill.images) == enabled
-    assert (prefill.execution_status is ResultStatus.COMPLETE) == enabled
+    assert prefill.execution_status is ResultStatus.COMPLETE
     assert bool(blocks(client.calls[0].messages)) == enabled
     if not enabled:
         assert (
-            "Cannot show image: image input is not enabled for the current model." in prefill.error
+            "Cannot show image: image input is not enabled for the current model." in prefill.stdout
         )
         assert "[shown:" not in prefill.stdout
 
@@ -391,5 +394,155 @@ async def test_sandbox_executor_per_cell_policy_switch_and_cap():
         reset = await executor.run_cell("show(clip)")
         assert reset.error is not None and not reset.images
         assert "[shown:" not in reset.stdout
+    finally:
+        await executor.aclose()
+
+
+@pytest.mark.parametrize("backend", [None, pytest.param("sandbox", marks=pytest.mark.sandbox)])
+async def test_prefill_denial_keeps_later_text_enabled_media_and_return_doc(backend):
+    from pydantic import BaseModel
+
+    class InspectionResult(BaseModel):
+        summary: str
+
+    client = FakeLLMClient(
+        [response("return_result({'summary': 'done'})")],
+        strict_exhaustion=True,
+        media_inputs=["audio"],
+    )
+
+    from nooa.runtime.sandbox.config import SandboxConfig
+
+    config = CodeActConfig(max_iterations=2)
+    if backend:
+        config = CodeActConfig(
+            max_iterations=2,
+            execution_backend=backend,
+            sandbox=SandboxConfig(require=False, network=True, filesystem=False),
+        )
+
+    class InspectAgent(Agent, llm=client):
+        @strategy(CodeActStrategy(config=config))
+        async def inspect(self, image: Image, text: str, audio: Audio) -> InspectionResult:
+            """Inspect inputs."""
+            ...
+
+    agent = InspectAgent()
+    result = await agent.inspect(MEDIA[0], "IMPORTANT_TEXT_AFTER_DISABLED_MEDIA", MEDIA[1])
+    assert result.summary == "done"
+    prefill = next(e for e in agent.event_manager.values() if isinstance(e, PythonOutput))
+    assert prefill.execution_status is ResultStatus.COMPLETE and not prefill.error
+    assert "IMPORTANT_TEXT_AFTER_DISABLED_MEDIA" in prefill.stdout
+    assert "Return type:" in prefill.stdout and "summary" in prefill.stdout
+    assert [attachment_kind(b) for b in prefill.images] == ["audio"]
+    assert "IMPORTANT_TEXT_AFTER_DISABLED_MEDIA" in str(client.calls[0].messages)
+    assert [attachment_kind(b) for b in blocks(client.calls[0].messages)] == ["audio"]
+    # Automatic recovery must not change explicit user-cell behavior.
+    agent.attachment = MEDIA[0]
+    explicit = await agent.runtime.execute_code("show(self.attachment)")
+    assert isinstance(explicit.error, ValueError) and not explicit.images
+
+
+@pytest.mark.parametrize(
+    "cls,mime",
+    [
+        (Image, "application/pdf"),
+        (Audio, "application/pdf"),
+        (Video, "application/pdf"),
+        (Audio, "video/mp4"),
+        (Video, "audio/wav"),
+    ],
+)
+@pytest.mark.parametrize("source", ["bytes", "url", "conflicting_data_url"])
+async def test_known_python_mime_conflicts_fail_show_and_predict(cls, mime, source):
+    from nooa.runtime.media_capture import MediaPermissionError, media_to_content_block
+    from nooa.strategies.predict import PredictStrategy
+
+    if source == "bytes":
+        obj = cls.from_bytes(b"not-sniffed", media_type=mime)
+    elif source == "url":
+        obj = cls.from_url("https://example.invalid/media", media_type=mime)
+    else:
+        obj = cls("data:application/pdf;base64,eA==", f"{cls._modality}/valid")
+    with pytest.raises(MediaPermissionError, match="known MIME metadata"):
+        media_to_content_block(obj)
+    client = FakeLLMClient(media_inputs=ALL)
+    agent = MediaAgent(llm=client)
+    agent.attachment = obj
+    result = await agent.runtime.execute_code("show(self.attachment)")
+    assert isinstance(result.error, MediaPermissionError) and not result.images
+
+    class PredictAgent(Agent, llm=client):
+        @strategy(PredictStrategy())
+        async def inspect(self, attachment) -> str:
+            """Inspect attachment."""
+            ...
+
+    with pytest.raises(MediaPermissionError):
+        await PredictAgent().inspect(obj)
+    assert client.call_count == 0
+
+
+@pytest.mark.parametrize("obj,kind", list(zip(MEDIA, ALL, strict=True)))
+async def test_matching_python_mime_predict_show_symmetry(obj, kind):
+    from nooa.strategies.predict import PredictStrategy
+
+    client = FakeLLMClient([LLMResponse(content='{"value":"done"}')], media_inputs=[kind])
+    agent = MediaAgent(llm=client)
+    agent.attachment = obj
+    captured = await agent.runtime.execute_code("show(self.attachment)")
+    assert captured.error is None and attachment_kind(captured.images[0]) == kind
+
+    class PredictAgent(Agent, llm=client):
+        @strategy(PredictStrategy())
+        async def inspect(self, attachment) -> str:
+            """Inspect attachment."""
+            ...
+
+    assert await PredictAgent().inspect(obj) == "done"
+    assert [attachment_kind(b) for b in blocks(client.calls[0].messages)] == [kind]
+
+
+async def test_unrelated_auto_show_error_not_swallowed(monkeypatch):
+    from nooa.runtime import media_capture
+
+    def broken(media):
+        raise RuntimeError("unrelated conversion failure")
+
+    monkeypatch.setattr(media_capture, "media_to_content_block", broken)
+    client = FakeLLMClient([response("return_result('done')")], media_inputs=["image"])
+
+    class InspectAgent(Agent, llm=client):
+        @strategy(CodeActStrategy(config=CodeActConfig(max_iterations=2)))
+        async def inspect(self, image: Image, text: str) -> str:
+            """Inspect inputs."""
+            ...
+
+    agent = InspectAgent()
+    assert await agent.inspect(MEDIA[0], "LATER_TEXT") == "done"
+    prefill = next(e for e in agent.event_manager.values() if isinstance(e, PythonOutput))
+    assert prefill.execution_status is ResultStatus.ERROR
+    assert "unrelated conversion failure" in prefill.error
+    assert "LATER_TEXT" not in prefill.stdout
+
+
+@pytest.mark.sandbox
+async def test_worker_rejects_known_mime_conflict_before_capture():
+    from nooa.runtime.sandbox.config import SandboxConfig
+    from nooa.runtime.sandbox.executor import SandboxedExecutor
+
+    agent = MediaAgent(llm=FakeLLMClient(media_inputs=ALL))
+    executor = SandboxedExecutor(
+        agent, SandboxConfig(require=False, network=True, filesystem=False), cell_timeout=15
+    )
+    try:
+        for source in (
+            "Audio.from_bytes(b'pdf', media_type='application/pdf')",
+            "Video.from_url('https://example.invalid/video', media_type='application/pdf')",
+        ):
+            result = await executor.run_cell(f"show({source})", media_inputs=ALL)
+            assert result.error is not None and not result.images
+            assert "known MIME metadata does not match" in str(result.error)
+            assert "[shown:" not in result.stdout
     finally:
         await executor.aclose()

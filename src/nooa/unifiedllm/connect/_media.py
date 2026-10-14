@@ -142,6 +142,12 @@ def exception_reason(record, kind, exc):
         current = current.__cause__ or current.__context__
     if record.get("timeout_kind"):
         cause = "Timed out; server receipt and completion are unknown"
+    elif isinstance(observed_status := getattr(exc, "_connect_http_status", None), int) and not (
+        200 <= observed_status < 300
+    ):
+        # Response-hook evidence is authoritative even if SDK translation chains
+        # a connection error. status_code alone may be a synthetic transport 500.
+        cause = f"Service returned HTTP {observed_status}"
     elif connection_error:
         # SDKs can assign synthetic HTTP 500 to transport failures.
         cause = "Could not connect to the service"

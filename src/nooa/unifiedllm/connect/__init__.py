@@ -793,8 +793,34 @@ def entry_warnings(entry: dict) -> list[str]:
     return warnings
 
 
+def same_media_route(previous: dict, entry: dict) -> bool:
+    """Permissions belong to the normalized model/endpoint/interface, not credentials."""
+
+    def route(value):
+        style = value.get("api_style") or (
+            "responses" if value.get("client_type") == "responses" else "chat"
+        )
+        endpoint = value.get("api_base")
+        if not endpoint or not value.get("model_name"):
+            return None
+        endpoint = normalize_endpoint(endpoint)
+        if style == "anthropic":
+            endpoint = endpoint.removesuffix("/v1")
+        return (
+            value["model_name"],
+            endpoint,
+            style,
+            value.get("client_type", "responses" if style == "responses" else "completion"),
+        )
+
+    old = route(previous)
+    return old is not None and old == route(entry)
+
+
 def configured_reply_cap(entry: dict, level: str | None = None) -> int:
     """The saved request cap, optionally replaced by a selected reasoning level."""
+    if level is None:
+        level = entry.get("reasoning_level")
     settings = entry.get("reasoning_levels", {}).get(level, {})
     return next((settings[k] for k in REPLY_CAP_KEYS if k in settings), entry["max_tokens"])
 
@@ -811,11 +837,10 @@ def refresh_plan(proposal: ConnectPlan) -> ConnectPlan:
     for probe in proposal.probes:
         body = deepcopy(probe.body)
         if probe.uses_configured_cap:
-            settings = (
-                entry.get("reasoning_levels", {}).get(probe.name.removeprefix("level:"), {})
-                if probe.name.startswith("level:")
-                else {}
+            level = (
+                probe.name[6:] if probe.name.startswith("level:") else entry.get("reasoning_level")
             )
+            settings = entry.get("reasoning_levels", {}).get(level, {})
             body.update(settings)
             cap = configured_reply_cap(
                 entry, probe.name[6:] if probe.name.startswith("level:") else None
@@ -830,7 +855,9 @@ def refresh_plan(proposal: ConnectPlan) -> ConnectPlan:
                 probe, body=body, token_estimate=probe.input_reservation + cap, timeout_seconds=120
             )
         probes.append(probe)
-    estimate = sum(p.token_estimate for p in probes)
+    # Skips stay reviewable with full per-probe reservations/caps so removing a
+    # skip later cannot bypass execution budget or approved-cap checks.
+    estimate = sum(p.token_estimate for p in probes if not p.skip_reason)
     if proposal.session_checks:
         from ._session import reply_budget
 
@@ -894,19 +921,15 @@ def plan(
     vendor = "anthropic" if api_style == "anthropic" else "openai"
     entry: dict[str, Any] = {
         "model_name": f"{vendor}/{model}",
-        "media_inputs": list(
-            validate_media_inputs(
-                existing_entry.get("media_inputs")
-                if media_inputs is None and existing_entry
-                else media_inputs
-            )
-        ),
+        "media_inputs": list(validate_media_inputs(media_inputs)),
         "client_type": "responses" if api_style == "responses" else "completion",
         "api_style": api_style,
         # The Messages runtime adds /v1/messages; Chat/Responses expect an API base.
         "api_base": api_base.removesuffix("/v1") if api_style == "anthropic" else api_base,
         "api_key_env": api_key_env,
     }
+    if media_inputs is None and existing_entry and same_media_route(existing_entry, entry):
+        entry["media_inputs"] = list(validate_media_inputs(existing_entry.get("media_inputs")))
     provenance: dict[str, Any] = {
         "probes": {},
         "requests_accepted": [],
@@ -1095,8 +1118,13 @@ def plan(
             rates = [float(catalogue["pricing"][key]) for key in ("prompt", "completion")]
             if all(math.isfinite(rate) and rate >= 0 for rate in rates):
                 price = (
-                    sum(probe.input_reservation for probe in probes) * rates[0]
-                    + sum(probe.token_estimate - probe.input_reservation for probe in probes)
+                    sum(probe.input_reservation for probe in probes if not probe.skip_reason)
+                    * rates[0]
+                    + sum(
+                        probe.token_estimate - probe.input_reservation
+                        for probe in probes
+                        if not probe.skip_reason
+                    )
                     * rates[1]
                 )
         except (ValueError, TypeError, KeyError):
@@ -1144,6 +1172,13 @@ async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None)
                 params.pop(key, None)
         # A level can set the cap itself; do not pass a conflicting override.
         params["reasoning_level"] = label
+    elif selected := entry.get("reasoning_level"):
+        settings = entry.get("reasoning_levels", {}).get(selected, {})
+        for key in settings:
+            params.pop(key, None)
+        if REPLY_CAP_KEYS & settings.keys():
+            for key in REPLY_CAP_KEYS:
+                params.pop(key, None)
     client = client_from_config(
         alias,
         {**entry, "media_inputs": [probe.name[6:]]} if probe.name.startswith("media:") else entry,
@@ -1160,13 +1195,19 @@ async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None)
     output_settings_sent = []
     response_status = []
     reply_evidence = {}
+    schema_carrier = None
+    schema_completed = False
+    schema_value = None
     send_started = False
 
     async def capture_status(response):
+        nonlocal schema_completed, schema_value
         response_status.append(response.status_code)
         if typed_media_check and response.is_success:
             # Keep envelope facts even when native schema validation fails.
-            # Never parse/score the answer here or retain provider reply text.
+            # Do not score access or retain reply text. Only correlate a schema
+            # carrier with the exact requested output contract; native Predict
+            # still has to validate and return that same boolean.
             await response.aread()
             try:
                 body = response.json()
@@ -1185,6 +1226,19 @@ async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None)
                     finish = choice.get("finish_reason")
                     final = choice.get("message", {}).get("content")
                 elif body.get("type") == "message":
+                    blocks = body.get("content", [])
+                    carriers = [b for b in blocks if b.get("type") == "tool_use"]
+                    schema_completed = bool(
+                        schema_carrier
+                        and body.get("stop_reason") == "tool_use"
+                        and len(carriers) == 1
+                        and carriers[0].get("name") == schema_carrier
+                        and isinstance(carriers[0].get("input"), dict)
+                        and set(carriers[0]["input"]) == {"value"}
+                        and type(carriers[0]["input"]["value"]) is bool
+                    )
+                    if schema_completed:
+                        schema_value = carriers[0]["input"]["value"]
                     finish = {
                         "end_turn": "stop",
                         "max_tokens": "length",
@@ -1224,7 +1278,7 @@ async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None)
                 pass
 
     async def capture(request):
-        nonlocal send_started
+        nonlocal send_started, schema_carrier
         from nooa.unifiedllm.connect._session import settings_on_wire
 
         if typed and send_started:
@@ -1265,6 +1319,20 @@ async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None)
                 **(resolved.get("extra_body") or {}),
             }
         wire = json.loads(request.content)
+        if typed_media_check and entry["api_style"] == "anthropic":
+            tools = wire.get("tools", [])
+            choice = wire.get("tool_choice", {})
+            if len(tools) == 1 and choice.get("type") == "tool":
+                tool = tools[0]
+                schema = tool.get("input_schema", {})
+                if (
+                    tool.get("name") == choice.get("name")
+                    and schema.get("type") == "object"
+                    and schema.get("required") == ["value"]
+                    and set(schema.get("properties", {})) == {"value"}
+                    and schema["properties"]["value"].get("type") == "boolean"
+                ):
+                    schema_carrier = tool["name"]
         observed = settings_on_wire(expected, wire)
         output_settings_sent.append(observed)
         if probe.name.startswith("media:"):
@@ -1300,6 +1368,17 @@ async def _run_probe(alias: str, entry: dict, probe: Probe, api_key: str | None)
             response.parsed = result  # Transient native method result, never persisted.
         else:
             response = await client.acall(messages=messages, **params)
+        if (
+            typed_media_check
+            and schema_completed
+            and type(response.parsed) is bool
+            and response.parsed is schema_value
+            and not response.tool_calls
+            and response.finish_reason == "stop"
+        ):
+            # Exact requested schema output is a completed typed answer, not an
+            # actionable tool call. Baseline/legacy normalization is unchanged.
+            reply_evidence.update(finish_reason="stop", final_answer_observed=True)
         transport = getattr(client, "transport", "litellm")
         observed = (len(settings_sent) == 1 and all(settings_sent)) if settings_sent else None
         response.metadata["connect_evidence"] = {
@@ -1356,6 +1435,23 @@ async def check_stage(
     """
     if stage not in {"routing", "tools", "reasoning", "media", "session", "all"}:
         raise ValueError("Unknown check stage")
+    # A selected level already present in the approved plan can supply the
+    # routing/media cap. Never reapprove an edited cap merely by running a stage;
+    # callers must explicitly refresh/review such edits first.
+    level = proposal.entry.get("reasoning_level")
+    planned_level = next((p for p in proposal.probes if p.name == f"level:{level}"), None)
+    if planned_level and configured_reply_cap(proposal.entry) == (
+        planned_level.token_estimate - planned_level.input_reservation
+    ):
+        refreshed = refresh_plan(proposal)
+        proposal = replace(
+            refreshed,
+            # Existing level probes keep their independently approved caps.
+            probes=tuple(
+                old if old.name.startswith("level:") else new
+                for old, new in zip(proposal.probes, refreshed.probes, strict=True)
+            ),
+        )
     probes = tuple(
         p
         for p in proposal.probes

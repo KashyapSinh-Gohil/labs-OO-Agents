@@ -2625,8 +2625,25 @@ class ResponsesClient(UnifiedLLM):
                         block["detail"] = image["detail"]
                 block["type"] = "input_image"
             elif block.get("type") == "file":
-                file = block.pop("file")
-                block.update(file)
+                file = block.get("file")
+                if not isinstance(file, Mapping):
+                    raise ValueError(
+                        "Responses file content requires a nested 'file' mapping; "
+                        "use {'type': 'file', 'file': {...}} or a native "
+                        "{'type': 'input_file', ...} block."
+                    )
+                if not any(file.get(key) for key in ("file_data", "file_id", "file_url")):
+                    raise ValueError(
+                        "Responses file mapping requires file_data, file_id or file_url."
+                    )
+                block.pop("file")
+                block.update(
+                    {
+                        key: value
+                        for key, value in file.items()
+                        if key in {"detail", "file_data", "file_id", "file_url", "filename"}
+                    }
+                )
                 block["type"] = "input_file"
         return result
 

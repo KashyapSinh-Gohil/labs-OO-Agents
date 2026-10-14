@@ -148,6 +148,7 @@ async def test_discovery_acceptance_cannot_be_reused_as_typed_baseline(monkeypat
             "https://api.test/v1",
             "",
             styles=("chat",),
+            api_key="fake",
             output_tokens=1000,
         )
     ]

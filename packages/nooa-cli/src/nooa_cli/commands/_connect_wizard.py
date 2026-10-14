@@ -55,6 +55,7 @@ class WizardState:
     levels: Any = None
     levels_file: Any = None
     media_inputs: Any = None
+    inherit_media_inputs: bool = False
     test_media_inputs: Any = None
     model: Any = None
     no_catalogue: Any = None
@@ -795,7 +796,22 @@ def configure_media_inputs(state: WizardState) -> bool:
     if state.media_inputs is not None:
         state.media_inputs = prompts.parse_media_inputs(state.media_inputs)
         return True
-    previous = validate_media_inputs((state.editing or {}).get("media_inputs"))
+    previous_entry = state.editing or (
+        (state.data or {}).get("models", {}).get(state.alias) if state.alias else None
+    )
+    previous = ()
+    if previous_entry and state.model and state.api_style:
+        route = connect.plan(
+            state.alias or "candidate",
+            state.model,
+            state.api_style,
+            state.endpoint,
+            state.api_key_env or "",
+            existing_entry=previous_entry,
+        ).entry
+        previous = validate_media_inputs(route["media_inputs"])
+    elif state.editing:
+        previous = validate_media_inputs(state.editing.get("media_inputs"))
     if state.test_media_inputs is not None:
         state.test_media_inputs = prompts.parse_media_inputs(state.test_media_inputs)
     elif not state.yes and state.approval == "all":
@@ -807,6 +823,9 @@ def configure_media_inputs(state: WizardState) -> bool:
             return True
     if state.test_media_inputs:
         # Retesting is evidence collection, not permission revocation.
+        # Resolve again after model/interface selection; this list is the menu
+        # preview, not permission to forward to a subsequently changed route.
+        state.inherit_media_inputs = True
         state.media_inputs = list(previous)
         view.line(
             "Selected media tests: "
@@ -814,12 +833,23 @@ def configure_media_inputs(state: WizardState) -> bool:
             + ". Uses the approved token budget."
         )
     else:
+        state.inherit_media_inputs = bool(state.yes)
         state.media_inputs = list(previous) if state.yes else prompts.choose_media_inputs(previous)
     return True
 
 
 def configure_checks(state: WizardState) -> bool:
     """Configure checks; return False when the user cancels."""
+    if state.media_inputs is None or state.inherit_media_inputs:
+        previous = connect.plan(
+            state.alias or "candidate",
+            state.model,
+            state.api_style,
+            state.endpoint,
+            state.api_key_env,
+            existing_entry=state.existing,
+        ).entry
+        state.media_inputs = previous["media_inputs"]
     if state.levels_file and (state.levels or state.reasoning_template):
         raise click.UsageError("Use either --levels-file or --reasoning-template with --levels.")
     state.patches = None

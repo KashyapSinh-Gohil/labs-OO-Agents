@@ -20,6 +20,7 @@ from tests.unifiedllm.connect.connect_http import mock_http, response_body
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOOA_CONNECT_TEST_API_KEY", "offline-dummy")
     monkeypatch.setenv("NEMO_OO_USER_DIR", str(tmp_path / "user"))
     monkeypatch.setenv("NEMO_OO_PROJECT_DIR", str(tmp_path / "project"))
     monkeypatch.setattr(llm_config, "llm_config_chain", lambda: [])
@@ -35,7 +36,7 @@ def options(path):
         "--api-style",
         "chat",
         "--api-key-env",
-        "",
+        "NOOA_CONNECT_TEST_API_KEY",
         "--no-catalogue",
         "--max-tokens",
         "1000",
@@ -255,6 +256,8 @@ def test_stage_plan_preview_media_and_check_save_roundtrip(monkeypatch, tmp_path
     calls = fake_http(monkeypatch)
     base = [
         "model",
+        "--api-key-env",
+        "NOOA_CONNECT_TEST_API_KEY",
         "--endpoint",
         "https://api.test/v1",
         "--api-style",
@@ -288,7 +291,12 @@ def test_stage_plan_preview_media_and_check_save_roundtrip(monkeypatch, tmp_path
 
 
 def test_library_existing_entry_declarations_preserved_when_omitted():
-    original = {"media_inputs": ["audio", "video"]}
+    original = {
+        "model_name": "openai/model",
+        "api_style": "chat",
+        "api_base": "https://api.test/v1",
+        "media_inputs": ["audio", "video"],
+    }
     assert connect.plan(
         "local", "model", "chat", "https://api.test/v1", "", existing_entry=original
     ).entry["media_inputs"] == ["audio", "video"]
@@ -312,7 +320,7 @@ def test_edit_retest_preserves_prior_permissions_even_if_not_passed(
         "model_name": "openai/model",
         "api_style": "chat",
         "api_base": "https://api.test/v1",
-        "api_key_env": "",
+        "api_key_env": "NOOA_CONNECT_TEST_API_KEY",
         "media_inputs": ["image", "audio", "video"],
         "max_tokens": 1000,
     }
@@ -355,7 +363,7 @@ def test_guided_edit_all_formats_retains_prior_declarations(
         "model_name": "openai/model",
         "api_style": "chat",
         "api_base": "https://api.test/v1",
-        "api_key_env": "",
+        "api_key_env": "NOOA_CONNECT_TEST_API_KEY",
         "media_inputs": ["audio", "video"],
         "max_tokens": 1000,
     }
@@ -424,7 +432,7 @@ def test_http_failure_displays_effective_setting_without_changing_evidence(
                             "model_name": "openai/model",
                             "api_style": "chat",
                             "api_base": "https://api.test/v1",
-                            "api_key_env": "",
+                            "api_key_env": "NOOA_CONNECT_TEST_API_KEY",
                             "max_tokens": 1000,
                             "media_inputs": previous,
                         }
@@ -553,7 +561,7 @@ def test_final_review_can_disable_retained_enabled_failed_input(monkeypatch, tmp
                         "model_name": "openai/model",
                         "api_style": "chat",
                         "api_base": "https://api.test/v1",
-                        "api_key_env": "",
+                        "api_key_env": "NOOA_CONNECT_TEST_API_KEY",
                         "max_tokens": 1000,
                         "media_inputs": ["image"],
                     }
@@ -675,7 +683,7 @@ def test_typed_test_all_failed_video_permission_is_accurate(
                             "api_style": "chat",
                             "client_type": "completion",
                             "api_base": "https://api.test/v1",
-                            "api_key_env": "",
+                            "api_key_env": "NOOA_CONNECT_TEST_API_KEY",
                             "max_tokens": 1000,
                             "media_inputs": previous,
                         }
@@ -759,7 +767,7 @@ def test_typed_media_stage_json_acceptance_and_native_validation(
             "--api-style",
             "chat",
             "--api-key-env",
-            "",
+            "NOOA_CONNECT_TEST_API_KEY",
             "--max-tokens",
             "1000",
             "--budget-tokens",
@@ -828,7 +836,7 @@ def test_test_all_boolean_access_summary_and_retained_permissions(monkeypatch, t
                             "model_name": "openai/model",
                             "api_style": "chat",
                             "api_base": "https://api.test/v1",
-                            "api_key_env": "",
+                            "api_key_env": "NOOA_CONNECT_TEST_API_KEY",
                             "max_tokens": 1000,
                             "media_inputs": previous,
                         }
@@ -876,3 +884,62 @@ def test_test_all_boolean_access_summary_and_retained_permissions(monkeypatch, t
         )
         == 4
     )
+
+
+@pytest.mark.parametrize(
+    "change,flag,expected",
+    [
+        (None, None, ["image", "pdf"]),
+        (None, "", []),
+        ("model", None, []),
+        ("endpoint", None, []),
+        ("api-style", None, []),
+    ],
+)
+def test_ordinary_yes_reconnect_route_local_omission(monkeypatch, tmp_path, change, flag, expected):
+    path = tmp_path / "models.yaml"
+    entry = {
+        "model_name": "openai/model",
+        "api_style": "chat",
+        "api_base": "https://api.test/v1",
+        "api_key_env": "NOOA_CONNECT_TEST_API_KEY",
+        "media_inputs": ["image", "pdf"],
+        "max_tokens": 1000,
+    }
+    path.write_text(yaml.safe_dump({"models": {"local": entry}}))
+    args = options(path) + ["--yes", "--no-probe"]
+    if change == "model":
+        args[0] = "other"
+    elif change:
+        key = "--" + change
+        args[args.index(key) + 1] = "https://other.test/v1" if change == "endpoint" else "responses"
+    if flag is not None:
+        args += ["--media-inputs", flag]
+    result = CliRunner().invoke(command, args)
+    assert result.exit_code == 0, result.output
+    assert yaml.safe_load(path.read_text())["models"]["local"]["media_inputs"] == expected
+
+
+@pytest.mark.parametrize("answer", ['{"value":false}', "invalid"])
+def test_ordinary_yes_reconnect_failed_retest_retains_permissions(monkeypatch, tmp_path, answer):
+    fake_http(monkeypatch, answer)
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "models": {
+                    "local": {
+                        "model_name": "openai/model",
+                        "api_style": "chat",
+                        "api_base": "https://api.test/v1",
+                        "api_key_env": "NOOA_CONNECT_TEST_API_KEY",
+                        "media_inputs": ["image", "pdf"],
+                        "max_tokens": 1000,
+                    }
+                }
+            }
+        )
+    )
+    result = CliRunner().invoke(command, options(path) + ["--yes", "--test-media-inputs", "image"])
+    assert result.exit_code == 0, result.output
+    assert yaml.safe_load(path.read_text())["models"]["local"]["media_inputs"] == ["image", "pdf"]

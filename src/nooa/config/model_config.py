@@ -20,7 +20,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
-from nooa.unifiedllm.media_inputs import MediaInputs
+from nooa.media_inputs import MediaInputs
 
 
 class ModelConfig(BaseModel):

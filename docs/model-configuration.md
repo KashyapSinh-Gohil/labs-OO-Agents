@@ -114,7 +114,10 @@ automatic checks if you later want to test the endpoint.
 **New default: text-only.** Previously attachments were forwarded without an
 explicit declaration. Existing multimodal entries and direct Python clients
 must opt in to keep sending media; no model names, catalogue metadata, endpoint
-responses or successful probes enable inputs automatically.
+responses or unrequested probes enable inputs implicitly. In Connect's explicitly
+approved **TEST** mode, successful generated-media self-reports add permissions
+to the reviewed list before saving; the library's probe results alone never
+mutate declarations. See [Connect media setup](model-connect.md#choose-media-inputs-during-setup).
 
 ```yaml
 models:

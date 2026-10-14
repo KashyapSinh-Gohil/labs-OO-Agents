@@ -20,7 +20,11 @@ import contextvars
 import io
 from typing import Any
 
-from nooa.unifiedllm.media_inputs import MediaInputs, attachment_kind, validate_media_inputs
+from nooa.media_inputs import MediaInputs, attachment_kind, validate_media_inputs
+
+
+class MediaPermissionError(ValueError):
+    """An attachment is disabled or has contradictory known category metadata."""
 
 
 class _MediaBuffer:
@@ -47,14 +51,14 @@ class _MediaBuffer:
         kind = attachment_kind(block)
         if self.media_inputs is not None and kind is not None and kind not in self.media_inputs:
             if kind == "file":
-                raise ValueError(
+                raise MediaPermissionError(
                     "Cannot show file: only PDF files with MIME type application/pdf are "
                     "supported as file input. Use a PDF and enable media_inputs: [pdf] in "
                     "this model's llm_config.yaml entry (include any other inputs you want "
                     "to keep), or select PDF with nooa connect. For a Python client pass "
                     'media_inputs=["pdf"]. Only enable types your endpoint supports.'
                 )
-            raise ValueError(
+            raise MediaPermissionError(
                 f"Cannot show {kind}: {kind} input is not enabled for the current model. "
                 f"Add media_inputs: [{kind}] to this model's llm_config.yaml entry "
                 "(include any other inputs you want to keep), or select it with nooa connect. "
@@ -87,6 +91,20 @@ def media_to_content_block(media: Any) -> dict[str, Any]:
 
     if not isinstance(media, Media):
         raise TypeError(f"Expected Media (Image/Audio/Video/File), got {type(media).__name__}")
+
+    # Validate known metadata before lossy Audio/URL Video conversion. No
+    # byte sniffing or URL fetching; File retains the PDF-only filter policy.
+    if isinstance(media, (Image, Audio, Video)):
+        kind = media.modality
+        metadata = {
+            "type": {"image": "input_image", "audio": "input_audio", "video": "input_video"}[kind],
+            "media_type": media.media_type,
+            "url": media.data_url,
+        }
+        if attachment_kind(metadata) != kind:
+            raise MediaPermissionError(
+                f"Cannot show {kind}: known MIME metadata does not match its media category"
+            )
 
     if isinstance(media, Image):
         image_url_dict: dict[str, Any] = {"url": media.data_url}
