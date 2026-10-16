@@ -120,7 +120,7 @@ def diagnostic_context(
 
     from nooa._version import __version__
     from nooa.llm_config import llm_config_chain
-    from nooa.unifiedllm.connect import normalize_endpoint
+    from nooa.unifiedllm.connect import DECISION_API_STYLES, normalize_endpoint
     from nooa.unifiedllm.connect._diagnostics import installation_context
 
     context = {
@@ -198,8 +198,8 @@ def diagnostic_context(
                         else ["--api-key-env", api_key_env or ""]
                     ),
                     *(
-                        ["--api-style", "systemone", "--budget-tokens", str(min(remaining, 512))]
-                        if api_style == "systemone"
+                        ["--api-style", api_style, "--budget-tokens", str(min(remaining, 512))]
+                        if api_style in DECISION_API_STYLES
                         else [
                             "--output-tokens",
                             str(output_tokens),

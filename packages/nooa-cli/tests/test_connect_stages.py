@@ -407,7 +407,7 @@ def test_decision_discover_stage_is_a_usage_error_without_http(monkeypatch):
     result = CliRunner().invoke(command, [*DECISION_STAGE, "--stage", "discover"])
 
     assert result.exit_code == 2
-    assert "do not list models" in json.loads(result.stdout)["error"]["message"]
+    assert "do not list decision models" in json.loads(result.stdout)["error"]["message"]
 
 
 def test_decision_discovery_file_is_a_usage_error(monkeypatch, tmp_path):
@@ -465,3 +465,56 @@ def test_decision_interfaces_rejects_reasoning_template(monkeypatch):
 
     assert result.exit_code == 2
     assert "do not apply to --api-style systemone" in json.loads(result.stdout)["error"]["message"]
+
+
+OPENAI_DECISION_STAGE = [
+    "gpt-6-luna",
+    "--endpoint",
+    "https://api.openai.com/v1/decisions",
+    "--api-style",
+    "openai",
+    "--as",
+    "decisions",
+]
+
+
+def test_openai_decision_interfaces_stage_probes_only_openai(monkeypatch):
+    bodies = []
+
+    def handle(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-6-luna",
+                "answers": [{"type": "predicate", "name": "supported", "probability": 0.7}],
+            },
+        )
+
+    mock_http(monkeypatch, handle)
+
+    result = CliRunner().invoke(command, [*OPENAI_DECISION_STAGE, "--stage", "interfaces"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"]["accepted"] == ["openai"]
+    assert len(bodies) == 1
+    assert bodies[0]["questions"][0]["type"] == "predicate"
+
+
+def test_openai_decision_interfaces_rerun_hint_keeps_openai(monkeypatch):
+    mock_http(monkeypatch, lambda request: httpx.Response(503))
+
+    result = CliRunner().invoke(command, [*OPENAI_DECISION_STAGE, "--stage", "interfaces"])
+
+    rerun = json.dumps(json.loads(result.stdout))
+    assert "--api-style openai" in rerun
+    assert "--output-tokens" not in rerun
+
+
+def test_openai_decision_discover_stage_is_a_usage_error(monkeypatch):
+    mock_http(monkeypatch, lambda request: pytest.fail("No HTTP request expected"))
+
+    result = CliRunner().invoke(command, [*OPENAI_DECISION_STAGE, "--stage", "discover"])
+
+    assert result.exit_code == 2
+    assert "do not list decision models" in json.loads(result.stdout)["error"]["message"]

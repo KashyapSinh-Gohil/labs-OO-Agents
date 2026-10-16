@@ -14,13 +14,21 @@ uv run nooa connect
 ```
 
 Decision-model endpoints use the same flat registry and select their client
-through `client_type: decision`. Supply the exact model ID and complete System
-One request URL:
+through `client_type: decision`. Supply the exact model ID and complete
+decisions request URL, with `--api-style systemone` for System One endpoints:
 
 ```sh
 uv run nooa connect typesafe/jev-1.13 --as decisions \
   --endpoint https://openrouter.ai/api/alpha/decisions \
   --api-style systemone --api-key-env OPENROUTER_API_KEY
+```
+
+or `--api-style openai` for OpenAI's Decisions API:
+
+```sh
+uv run nooa connect gpt-6-luna --as openai-decisions \
+  --endpoint https://api.openai.com/v1/decisions \
+  --api-style openai --api-key-env OPENAI_API_KEY
 ```
 
 Connect sends one small boolean decision to validate the route and normalized
@@ -29,10 +37,10 @@ reply-limit checks. Add `--no-probe` to prepare and save the entry without any
 request.
 
 In stage mode, decision endpoints support `plan`, `interfaces`, `routing`,
-`all`, and `save`. With `--api-style systemone`, `interfaces` sends only the
+`all`, and `save`. With a decision API style, `interfaces` sends only the
 decision probe and never tries the chat interfaces. `discover` and
-`--discovery-file` are rejected before any request because System One endpoints
-do not list models.
+`--discovery-file` are rejected before any request because decision endpoints
+do not list decision models.
 
 ## Independent stages for agents
 

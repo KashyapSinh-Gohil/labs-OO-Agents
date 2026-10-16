@@ -124,7 +124,10 @@ _PATHS = {
     "responses": "responses",
     "anthropic": "messages",
     "systemone": "",
+    "openai": "",
 }
+# Decision API styles: their endpoint is the complete decisions URL, used as given.
+DECISION_API_STYLES = ("systemone", "openai")
 
 
 @dataclass(frozen=True)
@@ -328,9 +331,9 @@ async def discover(
     uses the same fetcher. Limits apply to the whole discovery: 30 seconds,
     5 MiB and 5,000 entries. Redirects and automatic retries are disabled.
     """
-    if api_style == "systemone":
+    if api_style in DECISION_API_STYLES:
         raise ValueError(
-            "System One decision endpoints do not list models; supply the exact decision model ID"
+            "Decision endpoints do not list decision models; supply the exact decision model ID"
         )
     if api_style not in _PATHS:
         raise ValueError("api_style must be chat, responses or anthropic")
@@ -610,8 +613,8 @@ def configure_entry(entry: dict, *, reply_tokens: int | None = None) -> dict:
     result = deepcopy(entry)
     result.setdefault("transport", "direct")
     if result.get("client_type") == "decision":
-        if result.get("api_style") != "systemone":
-            raise ValueError("Decision entries require api_style: systemone")
+        if result.get("api_style") not in DECISION_API_STYLES:
+            raise ValueError("Decision entries require api_style: systemone or openai")
         if not isinstance(result.get("endpoint"), str) or not result["endpoint"].strip():
             raise ValueError("Decision entries require a complete endpoint URL")
         if reply_tokens is not None:
@@ -898,7 +901,7 @@ def plan(
     that charge. Servers can ignore caps, so this is not a billing limit.
     """
     if api_style not in _PATHS:
-        raise ValueError("api_style must be chat, responses, anthropic or systemone")
+        raise ValueError("api_style must be chat, responses, anthropic, systemone or openai")
     api_base = normalize_endpoint(api_base)
     if (
         not alias.strip()
@@ -913,7 +916,7 @@ def plan(
         raise ValueError("output_tokens must be 1..4096 and budget_tokens must be positive")
     if not 1 <= reasoning_output_tokens <= 32768:
         raise ValueError("reasoning_output_tokens must be 1..32768")
-    if api_style == "systemone":
+    if api_style in DECISION_API_STYLES:
         if catalogue is not None or endpoint_model is not None:
             raise ValueError("Decision models do not use chat model catalogue metadata")
         if reasoning_levels:
@@ -925,7 +928,7 @@ def plan(
         entry = {
             "model_name": model,
             "client_type": "decision",
-            "api_style": "systemone",
+            "api_style": api_style,
             "endpoint": api_base,
             "api_key_env": api_key_env,
             "provenance": {
@@ -1823,7 +1826,7 @@ async def _run_decision_steps(
     started = time.monotonic()
     deadline = asyncio.timeout(probe.timeout_seconds)
     record["request_shape"] = {
-        "api_style": "systemone",
+        "api_style": entry.get("api_style", "systemone"),
         "timeout_seconds": probe.timeout_seconds,
         "question_count": 1,
     }
@@ -1931,7 +1934,8 @@ async def check_interfaces(
     anthropic-only comparison needs a matching template (adaptive/budget/
     thinking) passed explicitly.
 
-    Pass ``styles=("systemone",)`` alone to send the single decision probe; a
+    Pass one decision style, ``("systemone",)`` or ``("openai",)``, alone to send
+    the single decision probe; a
     decision endpoint is a different client type, so it is never mixed with
     chat interfaces.
     """
@@ -1941,10 +1945,13 @@ async def check_interfaces(
         or not 1 <= timeout_seconds <= 120
     ):
         raise ValueError("Choose supported interfaces and a timeout between 1 and 120 seconds")
-    if "systemone" in styles and set(styles) != {"systemone"}:
-        raise ValueError("systemone is a decision interface and cannot be mixed with chat styles")
-    if "systemone" in styles and reasoning_template:
-        raise ValueError("systemone decision models have no reasoning levels to probe")
+    decision_styles = [style for style in styles if style in DECISION_API_STYLES]
+    if decision_styles and len(set(styles)) != 1:
+        raise ValueError(
+            f"{decision_styles[0]} is a decision interface and cannot be mixed with other styles"
+        )
+    if decision_styles and reasoning_template:
+        raise ValueError(f"{decision_styles[0]} decision models have no reasoning levels to probe")
     results = {}
     spent = 0
     for style in dict.fromkeys(styles):
@@ -1964,7 +1971,7 @@ async def check_interfaces(
             reasoning_levels=style_reasoning_levels,
             reasoning_output_tokens=reasoning_output_tokens,
         )
-        if style == "systemone":
+        if style in DECISION_API_STYLES:
             # The decision probe has no reply-token field to cap.
             probes: tuple[Probe, ...] = (
                 replace(proposal.probes[0], timeout_seconds=timeout_seconds),

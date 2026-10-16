@@ -74,7 +74,10 @@ models:
 ```
 
 The ``endpoint`` is the complete decisions request URL; NOOA does not append a
-chat-style path. Use the alias through ``decision_model="decisions"`` on an
+chat-style path. ``api_style`` selects the wire format: ``systemone`` for System
+One endpoints, or ``openai`` for OpenAI's ``/v1/decisions`` (for example
+``endpoint: https://api.openai.com/v1/decisions`` with ``model_name:
+gpt-6-luna``). Use the alias through ``decision_model="decisions"`` on an
 agent or method. Calling ``get_llm_client("decisions")`` is rejected because a
 decision client does not implement chat generation.
 

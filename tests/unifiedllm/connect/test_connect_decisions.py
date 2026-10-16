@@ -109,7 +109,7 @@ async def test_unapproved_decision_plan_does_not_send_http(monkeypatch) -> None:
 async def test_decision_discovery_is_rejected_without_http(monkeypatch) -> None:
     mock_http(monkeypatch, lambda request: pytest.fail("No HTTP request expected"))
 
-    with pytest.raises(ValueError, match="do not list models"):
+    with pytest.raises(ValueError, match="do not list decision models"):
         await connect.discover("https://decision.example/v1/systemone", api_style="systemone")
 
 
@@ -174,5 +174,61 @@ async def test_decision_interface_rejects_reasoning_template(monkeypatch) -> Non
             "",
             styles=("systemone",),
             reasoning_template="effort",
+        ):
+            pass
+
+
+OPENAI_ENDPOINT = "https://api.openai.com/v1/decisions"
+
+
+def test_openai_decision_plan_saves_openai_api_style() -> None:
+    proposal = connect.plan("decisions", "gpt-6-luna", "openai", OPENAI_ENDPOINT, "OPENAI_API_KEY")
+
+    assert proposal.entry["client_type"] == "decision"
+    assert proposal.entry["api_style"] == "openai"
+    assert proposal.entry["endpoint"] == OPENAI_ENDPOINT
+    assert "max_tokens" not in proposal.entry
+
+
+@pytest.mark.asyncio
+async def test_openai_interface_check_sends_one_openai_decision_probe(monkeypatch) -> None:
+    bodies: list[dict] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == OPENAI_ENDPOINT
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-6-luna",
+                "answers": [{"type": "predicate", "name": "supported", "probability": 0.8}],
+            },
+        )
+
+    mock_http(monkeypatch, handle)
+    events = [
+        event
+        async for event in connect.check_interfaces(
+            "decisions", "gpt-6-luna", OPENAI_ENDPOINT, "", styles=("openai",)
+        )
+    ]
+
+    result = events[-1]
+    assert isinstance(result, connect.InterfaceResult)
+    assert result.accepted == ("openai",)
+    assert result.results["openai"].entry["api_style"] == "openai"
+    assert len(bodies) == 1
+    assert isinstance(bodies[0]["input"], str)
+    assert bodies[0]["questions"][0]["type"] == "predicate"
+    assert bodies[0]["questions"][0]["name"] == "supported"
+
+
+@pytest.mark.asyncio
+async def test_decision_styles_cannot_be_mixed(monkeypatch) -> None:
+    mock_http(monkeypatch, lambda request: pytest.fail("No HTTP request expected"))
+
+    with pytest.raises(ValueError, match="cannot be mixed"):
+        async for _ in connect.check_interfaces(
+            "decisions", "gpt-6-luna", OPENAI_ENDPOINT, "", styles=("openai", "systemone")
         ):
             pass

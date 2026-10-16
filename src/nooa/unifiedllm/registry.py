@@ -46,7 +46,7 @@ YAML schema::
       decisions:
         model_name: typesafe/jev-1.13         # exact decision model ID
         client_type: decision
-        api_style: systemone
+        api_style: systemone                 # or openai for OpenAI's /v1/decisions
         endpoint: https://openrouter.ai/api/alpha/decisions
         api_key_env: OPENROUTER_API_KEY
 
@@ -425,6 +425,8 @@ def client_from_config(
         if not endpoint:
             raise ValueError(f"Decision model alias {name!r} requires an endpoint")
         params: dict[str, Any] = {"model": model, "endpoint": endpoint}
+        if "api_style" in config and "api_style" not in overrides:
+            params["api_style"] = config["api_style"]
         if "api_key" not in overrides:
             api_key = resolve_api_key_from_config(name, config)
             if api_key is not None:

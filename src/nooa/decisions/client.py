@@ -167,12 +167,35 @@ class DecisionAuthenticationError(DecisionClientError):
     """The decision service rejected authentication or authorization."""
 
 
+class DecisionRefusedError(DecisionClientError):
+    """The decision model refused to answer one or more questions.
+
+    Attributes:
+        questions: Names of the refused questions.
+        raw: The read-only response body, including any answered questions.
+    """
+
+    def __init__(self, questions: tuple[str, ...], *, raw: Mapping[str, Any] | None = None) -> None:
+        """Record the refused questions and the response they came from."""
+        names = ", ".join(repr(name) for name in questions)
+        super().__init__(f"The decision model refused to answer {names}")
+        self.questions = questions
+        self.raw = raw
+
+
 class InvalidDecisionResponseError(DecisionClientError):
     """The service returned a malformed or incomplete response."""
 
 
+type DecisionApiStyle = Literal["systemone", "openai"]
+
+
 class DecisionClient(DecisionModel):
     """Async client for HTTP decision-model endpoints.
+
+    ``api_style`` selects the wire format: ``"systemone"`` for System One
+    endpoints such as TypeSafe's Jev, or ``"openai"`` for OpenAI's
+    ``/v1/decisions``. Both return the same normalized answers.
 
     The client owns an internally created ``httpx.AsyncClient`` and closes it
     from :meth:`aclose`. A client supplied through ``client=`` remains owned by
@@ -188,6 +211,7 @@ class DecisionClient(DecisionModel):
         timeout: float = 60.0,
         retry_config: RetryConfig | None = None,
         client: httpx.AsyncClient | None = None,
+        api_style: DecisionApiStyle = "systemone",
     ) -> None:
         """Configure a decision client.
 
@@ -198,14 +222,19 @@ class DecisionClient(DecisionModel):
             timeout: Timeout for an internally created HTTP client, in seconds.
             retry_config: Shared retry policy. Defaults to one transient retry.
             client: Optional caller-owned asynchronous HTTP client.
+            api_style: Wire format of ``endpoint``: ``"systemone"`` or ``"openai"``.
 
         Raises:
-            ValueError: If ``model`` or ``endpoint`` is empty.
+            ValueError: If ``model`` or ``endpoint`` is empty, or ``api_style``
+                is not supported.
         """
         if not model:
             raise ValueError("model must not be empty")
         if not endpoint:
             raise ValueError("endpoint must not be empty")
+        if api_style not in ("systemone", "openai"):
+            raise ValueError(f"api_style must be 'systemone' or 'openai', got {api_style!r}")
+        self.api_style = api_style
         self.model = model
         self.endpoint = endpoint
         from nooa.unifiedllm.retry_config import RetryConfig
@@ -228,16 +257,22 @@ class DecisionClient(DecisionModel):
         Raises:
             DecisionAuthenticationError: If the endpoint returns 401 or 403.
             DecisionTransportError: If transport or HTTP handling fails.
+            DecisionRefusedError: If an OpenAI-style endpoint refuses a question.
             InvalidDecisionResponseError: If the response body is malformed.
         """
-        payload = {
-            "model": self.model,
-            "state": request.state,
-            "questions": {
-                name: self._question_payload(question)
-                for name, question in request.questions.items()
-            },
-        }
+        if self.api_style == "openai":
+            from nooa.decisions._openai_wire import openai_payload
+
+            payload = openai_payload(self.model, request)
+        else:
+            payload = {
+                "model": self.model,
+                "state": request.state,
+                "questions": {
+                    name: self._question_payload(question)
+                    for name, question in request.questions.items()
+                },
+            }
         try:
             from nooa.unifiedllm.retry import with_retry
 
@@ -254,6 +289,12 @@ class DecisionClient(DecisionModel):
             raise DecisionTransportError(f"Decision request failed: {exc}") from exc
 
         try:
+            if self.api_style == "openai":
+                from nooa.decisions._openai_wire import parse_openai_response
+
+                return parse_openai_response(
+                    response.json(), request, request_id=response.headers.get("x-request-id")
+                )
             return self._parse_response(response.json(), request)
         except (AttributeError, ValueError, TypeError, KeyError) as exc:
             raise InvalidDecisionResponseError(f"Invalid decision response: {exc}") from exc
@@ -329,6 +370,7 @@ __all__ = [
     "DecisionClient",
     "DecisionClientError",
     "DecisionModel",
+    "DecisionRefusedError",
     "DecisionRequest",
     "DecisionResponse",
     "DecisionTransportError",

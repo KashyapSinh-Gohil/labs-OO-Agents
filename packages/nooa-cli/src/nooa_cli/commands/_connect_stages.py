@@ -151,17 +151,17 @@ def run_stage(
             if not endpoint:
                 raise click.UsageError("Stage requires --endpoint")
             style = api_style or "chat"
-            if style == "systemone" and stage == "discover":
+            if style in connect.DECISION_API_STYLES and stage == "discover":
                 raise click.UsageError(
-                    "System One decision endpoints do not list models; pass the exact MODEL "
+                    "Decision endpoints do not list decision models; pass the exact MODEL "
                     "and use --stage interfaces or --stage routing"
                 )
-            if style == "systemone" and discovery_file:
-                raise click.UsageError("--discovery-file does not apply to --api-style systemone")
-            if style == "systemone" and (reasoning_template or reasoning_level):
+            if style in connect.DECISION_API_STYLES and discovery_file:
+                raise click.UsageError(f"--discovery-file does not apply to --api-style {style}")
+            if style in connect.DECISION_API_STYLES and (reasoning_template or reasoning_level):
                 raise click.UsageError(
                     "--reasoning-template and --reasoning-level do not apply to "
-                    "--api-style systemone"
+                    f"--api-style {style}"
                 )
             key_env = api_key_env or ""
             budget = connect.DEFAULT_CHECK_BUDGET if budget_tokens is None else budget_tokens
@@ -180,7 +180,8 @@ def run_stage(
                 reasoning_output_tokens=reasoning_output_tokens,
                 reply_tokens=reply_tokens,
                 reasoning_levels=levels,
-                session_checks=stage in {"session", "all"} and style != "systemone",
+                session_checks=stage in {"session", "all"}
+                and style not in connect.DECISION_API_STYLES,
                 endpoint_model=next(
                     (m for m in read_discovery(discovery_file, endpoint) if m["id"] == model), None
                 )
@@ -226,7 +227,7 @@ def run_stage(
                         reasoning_template=reasoning_template,
                         reasoning_level=reasoning_level or "medium",
                         reasoning_output_tokens=reasoning_output_tokens,
-                        **({"styles": ("systemone",)} if style == "systemone" else {}),
+                        **({"styles": (style,)} if style in connect.DECISION_API_STYLES else {}),
                     ):
                         if isinstance(event, connect.InterfaceResult):
                             result = event

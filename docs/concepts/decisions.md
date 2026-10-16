@@ -539,3 +539,56 @@ async def is_urgent(message: str) -> bool:
 `nooa connect` can validate and save this entry with
 `--api-style systemone`. It sends one small boolean decision probe and skips
 chat-only tool, reasoning, session, and reply-limit checks.
+
+### Use OpenAI's Decisions API
+
+`DecisionClient` speaks two wire formats. The default, `api_style="systemone"`,
+is the System One API used by TypeSafe's Jev. `api_style="openai"` speaks
+OpenAI's `/v1/decisions`:
+
+```python
+decision_model = DecisionClient(
+    "gpt-6-luna",
+    endpoint="https://api.openai.com/v1/decisions",
+    api_key=os.environ["OPENAI_API_KEY"],
+    api_style="openai",
+)
+```
+
+Or in the registry:
+
+```yaml
+models:
+  openai-decisions:
+    model_name: gpt-6-luna
+    client_type: decision
+    api_style: openai
+    endpoint: https://api.openai.com/v1/decisions
+    api_key_env: OPENAI_API_KEY
+```
+
+Declarations, detailed results, thresholds, raw responses, and
+`DecisionRecord` provenance work the same way with either format. The client
+adapts the request to OpenAI's shapes:
+
+- The decision state is sent as JSON text in `input`.
+- Questions are sent as a named array, in order. Boolean outputs become
+  `predicate` questions; their true/false criteria are appended to the
+  instructions, because predicates have no criteria field.
+- Choice criteria become `choices` and score criteria become `levels`, labelled
+  `"0"`, `"1"`, and so on. Structured criteria and instructions are sent as JSON
+  text, because OpenAI accepts only text.
+- Score legends are rebuilt from the declared criteria. `response_id` comes
+  from the `x-request-id` response header.
+
+OpenAI can refuse an individual question. The client then raises
+`DecisionRefusedError`, whose `questions` names the refused outputs and whose
+`raw` holds the complete response, including the answers to other questions.
+The call's `DecisionRecord` is stored as a failure.
+
+`nooa connect` validates and saves these entries with `--api-style openai`,
+sending one predicate probe.
+
+This uses OpenAI's native decision endpoint. `DecisionModel.from_llm(...)` with
+an OpenAI chat model is different: it uses the chat API and provides no
+probabilities.
