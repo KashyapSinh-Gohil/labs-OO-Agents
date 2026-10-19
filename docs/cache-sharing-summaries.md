@@ -19,7 +19,11 @@ await agent.aclose()
 ```
 
 Provider input usage above the threshold arms compaction for the next model
-call. No summary starts while the current response still has tools to execute.
+call. Before compacting, the harness rechecks the current rendered character
+count using the previous request's provider-calibrated tokens-per-character ratio.
+If that estimate is now within budget, it skips compaction. This lets model-driven
+compaction satisfy the budget without an unnecessary second summary.
+No summary starts while the current response still has tools to execute.
 This is a soft trigger, not a strict context cap; if there is no next call, no
 summary is needed.
 `preserve_recent` keeps the newest events intact.

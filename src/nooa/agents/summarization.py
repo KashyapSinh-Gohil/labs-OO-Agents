@@ -725,6 +725,13 @@ class TokenBudgetSummarizer(SummarizationAgent):
         self._last_input_tokens = None
         if tokens is None or tokens <= self.config.max_tokens:
             return False
+        # The last cell may already have compacted history. Recheck its current
+        # rendered length using the preceding request's provider-calibrated ratio.
+        stats = ctx.runtime._last_context_stats if ctx.runtime is not None else None
+        if stats is not None:
+            chars = stats.context_blocks_chars + stats.events_chars
+            if chars * ctx.runtime._tokens_per_char <= self.config.max_tokens:
+                return False
         history = tuple((tag, event.id) for tag, event in self.target_event_manager.items())
         source = history[: -self.config.preserve_recent] if self.config.preserve_recent else history
         if not source:

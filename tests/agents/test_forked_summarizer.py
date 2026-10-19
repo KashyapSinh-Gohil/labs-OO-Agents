@@ -306,13 +306,15 @@ async def test_provider_usage_arms_next_boundary_after_model_collapse():
 
 
 @pytest.mark.asyncio
-async def test_generate_compacts_prepared_request_before_dispatch(monkeypatch):
+@pytest.mark.parametrize("model_frees_budget", [False, True])
+async def test_generate_compacts_prepared_request_before_dispatch(monkeypatch, model_frees_budget):
     from nooa.runtime.actor import _current_llm_var, _current_method_var
 
     agent = Agent(llm=FakeLLMClient())
     effective = FakeLLMClient()
     for i in range(4):
-        agent.event_manager.add(Message(content=f"fact {i}"))
+        padding = " archived detail" * 10_000 if model_frees_budget and i == 0 else ""
+        agent.event_manager.add(Message(content=f"fact {i}{padding}"))
     calls = []
     order = []
     build_messages = agent.runtime._build_messages
@@ -337,7 +339,8 @@ async def test_generate_compacts_prepared_request_before_dispatch(monkeypatch):
     llm_token = _current_llm_var.set(effective)
     method_token = _current_method_var.set(work)
     summarizer = TokenBudgetSummarizer.install(
-        agent, config=TokenBudgetConfig(max_tokens=100, preserve_recent=1)
+        agent,
+        config=TokenBudgetConfig(max_tokens=800 if model_frees_budget else 100, preserve_recent=1),
     )
     try:
         await agent.runtime.generate(tools=[], tool_choice="auto", temperature=0.3)
@@ -345,6 +348,13 @@ async def test_generate_compacts_prepared_request_before_dispatch(monkeypatch):
         assert order == ["render", "parent"]
         agent.event_manager.collapse("1", "2", "model summary")
         await agent.runtime.generate(tools=[], tool_choice="auto", temperature=0.3)
+        if model_frees_budget:
+            assert order == ["render", "parent", "render", "parent"]
+            assert len(calls) == 2
+            assert "model summary" in str(calls[-1][0])
+            assert "archived detail" not in str(calls[-1][0])
+            assert agent.event_manager["1..2"].summary_text == "model summary"
+            return
         assert len(calls) == 3
         assert order == ["render", "parent", "render", "summary", "render", "parent"]
         first, fork, continuation = calls
