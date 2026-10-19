@@ -95,7 +95,7 @@ def _marker_paths(value, path=()):
 
 
 @hidden
-def _assert_fork_settings(case, parent, fork):
+def _assert_projected_fork(case, parent, fork):
     key = "input" if case.responses else "messages"
     settings_equal = {k: v for k, v in parent.items() if k != key} == {
         k: v for k, v in fork.items() if k != key
@@ -107,17 +107,18 @@ def _assert_fork_settings(case, parent, fork):
         # is new; retain all historical blocks in that same user container.
         assert summary["content"][-1]["type"] == "text"
         text = summary["content"][-1]["text"]
+        prefix = fork[key][:-1] + [{**summary, "content": summary["content"][:-1]}]
         assert not list(_marker_paths(summary["content"][-1])), "summary was cache marked"
     else:
         content = summary["content"]
         text = content[0]["text"] if case.responses else content
+        prefix = fork[key][:-1]
         assert not list(_marker_paths(summary)), "summary was cache marked"
     assert "Background memory compaction:" in text, "summary instruction missing on wire"
-    # The boundary fork includes newly completed work; its full prefix is
-    # intentionally different from the preceding model request.
+    equal = prefix == parent[key]
+    assert equal, "projection changed the exact sent parent prefix/checkpoints"
     parent_markers = set(_marker_paths(parent))
-    if parent_markers:
-        assert list(_marker_paths(fork)), "fork lost cache checkpoints"
+    assert parent_markers <= set(_marker_paths(fork)), "historical checkpoints were dropped"
     if case.responses:
         assert len(parent_markers) >= 3, "historical Responses checkpoints missing"
     elif case.name == "opus55":
@@ -138,7 +139,7 @@ async def _run_summary_agent(case, client, monkeypatch, *, mock_usage=None):
     ]
     started, release = asyncio.Event(), asyncio.Event()
     records, bodies = [], []
-    parent_call = started_wait = None
+    parent_request = None
     real_send = httpx.AsyncClient.send
 
     async def capture(http_client, request, *args, **kwargs):
@@ -148,7 +149,7 @@ async def _run_summary_agent(case, client, monkeypatch, *, mock_usage=None):
             body = json.loads(request.content)
             cap = "max_output_tokens" if case.responses else "max_tokens"
             assert body[cap] == 4096, "missing bounded output"
-            phase = 0 if not bodies else 1
+            phase = 1 if len(bodies) == 2 else 0
             live = f'<live expr="self._summary_phase">\n{phase}\n</live>'
             strings = list(_strings(body))
             assert any(reference in s for s in strings), "fixed reference changed on wire"
@@ -157,6 +158,7 @@ async def _run_summary_agent(case, client, monkeypatch, *, mock_usage=None):
         return await real_send(http_client, request, *args, **kwargs)
 
     async def observe(ctx, nxt):
+        nonlocal parent_request
         is_fork = _in_summary_fork.get()
         assert ctx.client is client, "fork did not use original shared client"
         assert not ctx.filtered_history
@@ -164,12 +166,27 @@ async def _run_summary_agent(case, client, monkeypatch, *, mock_usage=None):
         assert len(boundaries) == 1, "expected one runtime cache boundary"
         assert any(reference in s for s in _strings(ctx.messages)), "fixed nonce prefix changed"
         if is_fork:
-            assert ctx.params["prompt_cache_key"].startswith(agent._agent_id)
+            assert parent_request is not None, "fork ran without a parent request"
+            messages, params, runtime = parent_request
+            equal = ctx.messages[:-1] == messages
+            assert equal, "fork did not reuse the actual sent parent request"
+            expected_params = {**params, "output_model": None}
+            equal = ctx.params == expected_params
+            assert equal, "fork changed parent tools/key/settings"
+            assert ctx.runtime is runtime, "fork changed policy runtime"
             assert boundaries[0] < len(ctx.messages) - 1
             assert "Background memory compaction:" in ctx.messages[-1]["content"]
             started.set()
             await release.wait()
+        if not is_fork and parent_request is None:
+            # Keep params live so the blocking fork sees dispatch's cache key.
+            parent_request = (list(ctx.messages), ctx.params, ctx.runtime)
+        before = [(tag, event.id) for tag, event in agent.event_manager.items()]
         result = await nxt(ctx)
+        if is_fork:
+            assert [(tag, event.id) for tag, event in agent.event_manager.items()] == before, (
+                "fork executed tools or wrote parent events"
+            )
         response = result.response
         assert isinstance(response, LLMResponse)
         if mock_usage:
@@ -178,7 +195,7 @@ async def _run_summary_agent(case, client, monkeypatch, *, mock_usage=None):
             assert usage.input_tokens == 14_000
             assert usage.output_tokens == 40
             assert usage.total_tokens == 14_040
-            expected_cached = 0 if not records else 12_000
+            expected_cached = 12_000 if is_fork or len(records) > 1 else 0
             if is_fork and mock_usage == "cache":
                 expected_cached = 0
             assert usage.cached_input_tokens == expected_cached
@@ -202,43 +219,52 @@ async def _run_summary_agent(case, client, monkeypatch, *, mock_usage=None):
     monkeypatch.setattr(httpx.AsyncClient, "send", capture)
     agent.event_manager.intercept("llm_call", observe)
     summarizer = TokenBudgetSummarizer.install(
-        agent, config=TokenBudgetConfig(max_tokens=100, preserve_recent=3, target_chars=600)
+        agent, config=TokenBudgetConfig(max_tokens=100, preserve_recent=1, target_chars=600)
     )
+    parent_call = asyncio.create_task(agent.answer())
+    started_wait = asyncio.create_task(started.wait())
     try:
-        assert await asyncio.wait_for(agent.answer(), 200) == 3, "fork changed parent result"
-        assert summarizer._pending_task is None
-        agent._summary_phase = 1
-        reminder = UserEvent(
-            content="Continue the original task: make exactly one python_cell call "
-            "containing only return_result(3). Do not answer in plain text."
-        )
-        agent.event_manager.add(reminder)
-        parent_call = asyncio.create_task(agent.answer())
-        started_wait = asyncio.create_task(started.wait())
         await asyncio.wait_for(
             asyncio.wait({parent_call, started_wait}, return_when=asyncio.FIRST_COMPLETED), 200
         )
-        assert started.is_set(), "installed threshold summarizer did not fork"
-        assert not parent_call.done(), "parent advanced during boundary compaction"
+        task = summarizer._pending_task
+        assert task is not None, "installed threshold summarizer did not fork"
+        assert started.is_set()
+        assert not task.done()
+        assert not parent_call.done(), "parent advanced before summary completed"
         source = dict(summarizer._pending_source)
         assert set(old) <= source.keys(), "fork did not select old events"
         before = [(tag, event.id) for tag, event in agent.event_manager.items()]
         recent = {tag: identity for tag, identity in before if tag not in source}
         assert not any(isinstance(e, Summary) for e in agent.event_manager.values())
+        agent._summary_phase = 1  # Fork must keep the already-sent phase 0.
         release.set()
-        assert await asyncio.wait_for(parent_call, 200) == 3
-        _assert_fork_settings(case, *bodies[:2])
-        _require_fork_cache(records[0][1], records[1][1])
-        summaries = [e for e in agent.event_manager.values() if isinstance(e, Summary)]
-        assert len(summaries) == 1, "fork produced no usable pending summary"
-        text = summaries[0].summary_text
+        assert await asyncio.wait_for(parent_call, 200) == 3, "fork changed parent result"
+        _assert_projected_fork(case, *bodies[:2])
+        assert [fork for fork, _ in records] == [True, False]
+        _require_fork_cache(records[1][1], records[0][1])
+        text = summarizer._pending_summary
         assert isinstance(text, str) and text.strip(), "fork produced no usable pending summary"
+        assert all(tag in agent.event_manager.keys() for tag in old), "summary applied too early"
+        summarizer.config = summarizer.config.model_copy(update={"max_tokens": 1_000_000_000})
+        # A new user task after compaction keeps summary instructions in memory
+        # from being mistaken for the current task. Do not alter tool_choice.
+        reminder = UserEvent(
+            content="Continue the original task: make exactly one python_cell call "
+            "containing only return_result(3). Do not answer in plain text."
+        )
+        reminder_tag = agent.event_manager.add(reminder)
+        recent[reminder_tag] = reminder.id
+        assert await asyncio.wait_for(agent.answer(), 200) == 3
+        summaries = [e for e in agent.event_manager.values() if isinstance(e, Summary)]
+        assert len(summaries) == 1, "summary did not apply at real BeforeTurn boundary"
+        assert summaries[0].summary_text == text
         assert set(old) <= set(summaries[0].children_tags)
         assert not set(old) & set(agent.event_manager.keys()), "old events did not collapse"
         assert all(agent.event_manager[tag].id == identity for tag, identity in recent.items())
         assert summarizer._pending_task is summarizer._pending_summary is None
         assert len(bodies) == len(records) == 3, "expected three calls per model"
-        assert [fork for fork, _ in records] == [False, True, False]
+        assert [fork for fork, _ in records] == [True, False, False]
         continuation = list(_strings(bodies[2]))
         assert any(text in s for s in continuation), "summary text missing on wire"
         # Old facts (and even quoted event markers) may legitimately appear in
@@ -250,14 +276,16 @@ async def _run_summary_agent(case, client, monkeypatch, *, mock_usage=None):
                     "collapsed event identity still separately rendered"
                 )
         assert any(reminder.content in s for s in continuation), "latest task missing on wire"
+        assert any("return_result(3)" in s.replace(reminder.content, "") for s in continuation), (
+            "recent parent work missing"
+        )
         return reference
     finally:
         release.set()
         await agent.aclose()
-        for task in (parent_call, started_wait):
-            if task is not None:
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
+        parent_call.cancel()
+        started_wait.cancel()
+        await asyncio.gather(parent_call, started_wait, return_exceptions=True)
         bodies.clear()  # Never retain native requests as artifacts.
 
 

@@ -64,6 +64,9 @@ async def exercise_summarization(client, family, monkeypatch):
             body = json.loads(request.content)
             limit_key = "max_output_tokens" if family == "openai" else "max_tokens"
             assert body.get(limit_key) == 2048, "Missing output cap on provider request"
+            assert all(fact in json.dumps(body).lower() for fact in FACTS), (
+                "Request omitted a required fact"
+            )
             bodies.append(body)
         return await real_send(http_client, request, **kwargs)
 
@@ -110,13 +113,7 @@ async def exercise_summarization(client, family, monkeypatch):
     summarizer = TokenBudgetSummarizer.install(
         parent, config=TokenBudgetConfig(max_tokens=100, preserve_recent=1, target_chars=600)
     )
-    assert "READY" in await parent.reply("Acknowledge the notes with READY.")
-    assert summarizer._pending_task is None
-    parent_call = asyncio.create_task(
-        parent.reply(
-            "What are the launch ticket, date and owner? Preserve their exact identifiers."
-        )
-    )
+    parent_call = asyncio.create_task(parent.reply("Acknowledge the notes with READY."))
     started_wait = asyncio.create_task(started.wait())
     try:
         await asyncio.wait_for(
@@ -130,14 +127,23 @@ async def exercise_summarization(client, family, monkeypatch):
         source = dict(summarizer._pending_source)
         recent = {tag: e.id for tag, e in parent.event_manager.items() if tag not in source}
         release.set()
-        answer = await asyncio.wait_for(parent_call, 150)
+        assert "READY" in await asyncio.wait_for(parent_call, 150)
+        text = summarizer._pending_summary
+        assert text, "Background summary failed or returned unusable text"
+        missing = [fact for fact in FACTS if fact not in text.lower()]
+        assert not missing, f"Summary lost a key fact: {missing}"
+        assert original_tag in parent.event_manager.keys(), "Summary applied before next turn"
+
+        # Keep this a three-request smoke test; next turn applies the waiting
+        # summary through BeforeTurn, but must not schedule another summary.
+        summarizer.config = summarizer.config.model_copy(update={"max_tokens": 1_000_000_000})
+        answer = await parent.reply(
+            "What are the launch ticket, date and owner? Preserve their exact identifiers."
+        )
         summaries = [e for e in parent.event_manager.values() if isinstance(e, Summary)]
         assert len(summaries) == 1, "Next agent turn did not apply exactly one summary"
         summary = summaries[0]
-        text = summary.summary_text
-        assert text, "Boundary summary failed or returned unusable text"
-        missing = [fact for fact in FACTS if fact not in text.lower()]
-        assert not missing, f"Summary lost a key fact: {missing}"
+        assert summary.summary_text == text
         assert original_tag in summary.children_tags
         assert original_tag not in parent.event_manager.keys()
         assert parent.events[original_tag].id == notes.id, "Raw source was not preserved"
@@ -151,9 +157,11 @@ async def exercise_summarization(client, family, monkeypatch):
         assert {k: v for k, v in first.items() if k != key} == {
             k: v for k, v in fork.items() if k != key
         }, "Fork changed request settings"
-        # The fork now includes the completed first turn and the new task.
-        # Exact append-only wire parity is covered by test_forked_summarizer_wire.
-        assert "Background memory compaction" in json.dumps(fork[key])
+        if family == "openai":
+            assert fork[key][:-1] == first[key], "Fork changed the parent prefix"
+        else:
+            assert fork[key][:-1] == first[key][:-1], "Fork changed the parent prefix"
+            assert fork[key][-1]["content"][:-1] == first[key][-1]["content"]
         assert first.get("tools") == fork.get("tools")
         assert fork.get("tool_choice") == first.get("tool_choice")
         # Summary renderers may quote/escape multiline text. Check its facts in

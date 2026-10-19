@@ -61,12 +61,12 @@ async def test_release_scenario_detects_missing_summarization(family, broken, mo
     monkeypatch.setattr(httpx.AsyncClient, "send", send)
     if broken == "fork":
 
-        async def no_fork(self, *args, **kwargs):
-            pass
+        async def no_fork(self, ctx, nxt):
+            return await nxt(ctx)
 
-        monkeypatch.setattr(TokenBudgetSummarizer, "_compact_if_needed", no_fork)
+        monkeypatch.setattr(TokenBudgetSummarizer, "_fork_after_call", no_fork)
     elif broken == "collapse":
-        monkeypatch.setattr(TokenBudgetSummarizer, "_apply_pending_summary", lambda *_: None)
+        monkeypatch.setattr(TokenBudgetSummarizer, "_handle_before_turn", lambda *_: None)
     cls = ResponsesClient if family == "openai" else CompletionClient
     model = "openai/test" if family == "openai" else "anthropic/claude-sonnet-4-5"
     limit = {"max_output_tokens": 2048} if family == "openai" else {"max_tokens": 2048}

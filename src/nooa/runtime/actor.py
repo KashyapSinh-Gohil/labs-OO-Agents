@@ -32,7 +32,6 @@ from nooa.context_blocks import (
 from nooa.context_blocks.scoped import _scoped_blocks_var, _scoped_events_var
 
 if TYPE_CHECKING:
-    from nooa.agents.summarization import TokenBudgetSummarizer
     from nooa.config.truncation_config import TruncationConfig
     from nooa.context_blocks.models import ContextWindowStats
     from nooa.decisions import (
@@ -605,8 +604,6 @@ class ActorRuntime:
         """
         # Agent instance
         self.agent: Any = agent
-        # Installed token-budget summarizers, awaited before preparing a model request.
-        self._compactors: list[TokenBudgetSummarizer] = []
 
         # Lock for generation serialization (only one LLM generation session at a time)
         self._generation_lock = asyncio.Lock()
@@ -1086,13 +1083,8 @@ class ActorRuntime:
 
         from nooa.unifiedllm.limits import context_limits_for, reduced_reply_params
 
-        # Get LLM client from context var (set by _execute_with_generation)
-        llm_client = _current_llm_var.get()
-        if llm_client is None:
-            raise RuntimeError("generate() called with no LLM client in context")
-
         # Build messages from context + events (timers inside _build_messages).
-        # Overflow recovery remains error-driven. If the API rejects
+        # No proactive clamping — recovery is error-driven. If the API rejects
         # with ContextWindowExceededError, the except handler archives events,
         # rebuilds messages, and retries.
         messages = await self._build_messages(
@@ -1103,6 +1095,11 @@ class ActorRuntime:
             request_params=kwargs,
         )
         _gen_hm = get_harness_metrics()
+
+        # Get LLM client from context var (set by _execute_with_generation)
+        llm_client = _current_llm_var.get()
+        if llm_client is None:
+            raise RuntimeError("generate() called with no LLM client in context")
 
         current_generation_id = self._generation_id_stack[-1] if self._generation_id_stack else None
 
@@ -1163,25 +1160,6 @@ class ActorRuntime:
                         )
                     ),
                 )
-
-                # Compaction uses the prepared request and finishes before the
-                # parent model can produce any new tool calls.
-                ctx.params.setdefault(
-                    "prompt_cache_key", f"{self.agent._agent_id}-{_llm_event_meta['strategy']}"
-                )
-                for summarizer in tuple(self._compactors):
-                    if await summarizer._compact_if_needed(ctx):
-                        ctx.messages = await self._build_messages(
-                            self._current_method,
-                            call_args=self._current_call.args if self._current_call else (),
-                            call_kwargs=self._current_call.kwargs if self._current_call else {},
-                            tools=tools,
-                            request_params=kwargs,
-                            llm_client=llm_client,
-                        )
-                        _dynamic_context = _snapshot_llm_request(
-                            self.event_manager, ctx.messages, current_generation_id or ""
-                        )
 
                 async def _core_llm(ctx: LLMCallContext) -> LLMCallContext:
                     self._update_context_limits(ctx.client, ctx.params)
