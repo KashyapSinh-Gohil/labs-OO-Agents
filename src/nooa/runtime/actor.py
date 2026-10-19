@@ -1091,13 +1091,6 @@ class ActorRuntime:
         if llm_client is None:
             raise RuntimeError("generate() called with no LLM client in context")
 
-        # Previous tools have finished. Compact before building the parent
-        # request so it sees the new history without a message-rebuild callback.
-        for summarizer in tuple(self._compactors):
-            await summarizer._compact_if_needed(
-                self, llm_client, tools=tools, output_model=output_model, **kwargs
-            )
-
         # Build messages from context + events (timers inside _build_messages).
         # Overflow recovery remains error-driven. If the API rejects
         # with ContextWindowExceededError, the except handler archives events,
@@ -1170,6 +1163,25 @@ class ActorRuntime:
                         )
                     ),
                 )
+
+                # Compaction uses the prepared request and finishes before the
+                # parent model can produce any new tool calls.
+                ctx.params.setdefault(
+                    "prompt_cache_key", f"{self.agent._agent_id}-{_llm_event_meta['strategy']}"
+                )
+                for summarizer in tuple(self._compactors):
+                    if await summarizer._compact_if_needed(ctx):
+                        ctx.messages = await self._build_messages(
+                            self._current_method,
+                            call_args=self._current_call.args if self._current_call else (),
+                            call_kwargs=self._current_call.kwargs if self._current_call else {},
+                            tools=tools,
+                            request_params=kwargs,
+                            llm_client=llm_client,
+                        )
+                        _dynamic_context = _snapshot_llm_request(
+                            self.event_manager, ctx.messages, current_generation_id or ""
+                        )
 
                 async def _core_llm(ctx: LLMCallContext) -> LLMCallContext:
                     self._update_context_limits(ctx.client, ctx.params)

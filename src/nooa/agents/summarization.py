@@ -63,7 +63,6 @@ def _copy_request_containers(value: Any) -> Any:
 if TYPE_CHECKING:
     from nooa.config.summarizer_config import MethodSummarizerConfig, TokenBudgetConfig
     from nooa.events import AfterTurn, EventBase
-    from nooa.runtime.actor import ActorRuntime
     from nooa.runtime.event_manager import EventManager
     from nooa.unifiedllm import UnifiedLLM
 
@@ -643,7 +642,7 @@ class TokenBudgetSummarizer(SummarizationAgent):
 
     Provider input usage arms compaction for the next model call. The parent
     awaits the summary and applies it immediately, provided the selected event
-    IDs still match. The runtime then builds the parent request. No parent tools
+    IDs still match. The runtime refreshes the request only if history changed. No parent tools
     execute between selection and application. Owners should await aclose()
     before closing the shared client.
 
@@ -710,45 +709,10 @@ class TokenBudgetSummarizer(SummarizationAgent):
 
     @hidden
     @no_trace
-    async def _compact_if_needed(
-        self,
-        runtime: "ActorRuntime",
-        client: "UnifiedLLM | None",
-        *,
-        tools: Any = None,
-        output_model: Any = None,
-        **kwargs: Any,
-    ) -> None:
-        """Select, summarize, and apply before generate() builds its parent request."""
+    async def _compact_if_needed(self, ctx: Any) -> bool:
+        """Summarize this prepared request; return whether active history changed."""
         if self._pending_task is not None or self._unsub_llm is None:
-            return
-        from nooa.runtime.actor import (
-            _current_strategy_var,
-            _decorator_events_var,
-            _scoped_events_var,
-        )
-        from nooa.runtime.middleware import LLMCallContext
-
-        strategy = _current_strategy_var.get()
-        strategy_name = type(strategy).__name__ if strategy is not None else "default"
-        params = {**kwargs, "tools": tools, "output_model": output_model}
-        params.setdefault("prompt_cache_key", f"{self._target_agent._agent_id}-{strategy_name}")
-        ctx = LLMCallContext(
-            agent=self._target_agent,
-            runtime=runtime,
-            client=client,
-            messages=[],
-            params=params,
-            filtered_history=any(
-                query is not None
-                for query in (
-                    self.target_event_manager.get_event_query(),
-                    _scoped_events_var.get(),
-                    _decorator_events_var.get(),
-                    self._target_agent.event_query,
-                )
-            ),
-        )
+            return False
         if self._automatic_context_budget and ctx.client is not None:
             budget = context_budget(
                 ctx.client,
@@ -760,32 +724,23 @@ class TokenBudgetSummarizer(SummarizationAgent):
         tokens = self._last_input_tokens
         self._last_input_tokens = None
         if tokens is None or tokens <= self.config.max_tokens:
-            return
-        tags = self.target_event_manager.keys()
-        selected = tags[: -self.config.preserve_recent] if self.config.preserve_recent else tags
-        source = tuple((tag, self.target_event_manager[tag].id) for tag in selected)
+            return False
+        history = tuple((tag, event.id) for tag, event in self.target_event_manager.items())
+        source = history[: -self.config.preserve_recent] if self.config.preserve_recent else history
         if not source:
-            return
+            return False
         start, end = source[0][0], source[-1][0]
         if ctx.filtered_history:
             self._warn_filtered_history()
-            return
+            return False
         if ctx.client is None:
             logger.warning("Skipping summary fork: no effective client; history is unchanged.")
-            return
+            return False
 
         # Allocate only at a fork, not every parent turn. Strings remain shared;
         # dictionaries belong to the fork; read-only response/boundary objects
         # travel unchanged so their provider state is not flattened or copied.
         try:
-            ctx.messages = await runtime._build_messages(
-                runtime._current_method,
-                call_args=runtime._current_call.args if runtime._current_call else (),
-                call_kwargs=runtime._current_call.kwargs if runtime._current_call else {},
-                tools=tools,
-                request_params=params,
-                llm_client=client,
-            )
             messages = _copy_request_containers(ctx.messages)
             params = _copy_request_containers(ctx.params)
             params.setdefault("output_model", None)
@@ -793,7 +748,7 @@ class TokenBudgetSummarizer(SummarizationAgent):
             logger.warning(
                 "Could not snapshot summary fork; parent call is unchanged", exc_info=True
             )
-            return
+            return False
         messages.append(
             {
                 "role": "user",
@@ -823,6 +778,9 @@ class TokenBudgetSummarizer(SummarizationAgent):
         try:
             await self._pending_task
             self._apply_pending_summary()
+            return history != tuple(
+                (tag, event.id) for tag, event in self.target_event_manager.items()
+            )
         finally:
             self._pending_task = None
             self._pending_source = None

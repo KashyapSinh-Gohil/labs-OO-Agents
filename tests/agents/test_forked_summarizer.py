@@ -66,16 +66,10 @@ async def run_call(agent, ctx, core):
 
     Real generate() ordering and rendering are covered by the runtime test below.
     """
-    from nooa.runtime.actor import _scoped_events_var
-
-    token = _scoped_events_var.set(object() if ctx.filtered_history else None)
-    try:
-        for summarizer in tuple(agent.runtime._compactors):
-            await summarizer._compact_if_needed(agent.runtime, ctx.client, **ctx.params)
-        ctx.messages = await agent.runtime._build_messages(None)
-        return await agent.event_manager.run_middleware("llm_call", ctx, core)
-    finally:
-        _scoped_events_var.reset(token)
+    for summarizer in tuple(agent.runtime._compactors):
+        if await summarizer._compact_if_needed(ctx):
+            ctx.messages = await agent.runtime._build_messages(None)
+    return await agent.event_manager.run_middleware("llm_call", ctx, core)
 
 
 @pytest.mark.asyncio
@@ -95,7 +89,7 @@ async def test_boundary_blocks_dispatch_and_applies_summary_before_parent():
 
     async def core(request):
         assert agent.event_manager.keys() == ["1..3", "4", "5"]
-        assert agent.runtime._build_messages.await_count == 2
+        agent.runtime._build_messages.assert_awaited_once()
         request.response = parent
         return request
 
@@ -312,7 +306,7 @@ async def test_provider_usage_arms_next_boundary_after_model_collapse():
 
 
 @pytest.mark.asyncio
-async def test_generate_compacts_before_building_parent_request(monkeypatch):
+async def test_generate_compacts_prepared_request_before_dispatch(monkeypatch):
     from nooa.runtime.actor import _current_llm_var, _current_method_var
 
     agent = Agent(llm=FakeLLMClient())
@@ -539,15 +533,21 @@ def test_known_history_filter_warns_at_install(class_filter, caplog):
 @pytest.mark.asyncio
 async def test_success_resets_consecutive_failure_stop():
     agent, summarizer, ctx = setup()
-    agent.llm.acall = AsyncMock(side_effect=[response(""), response("ok"), response("")])
+    agent.llm.acall = AsyncMock(
+        side_effect=[response(""), response("ok"), response("revised"), response("")]
+    )
 
     async def core(request):
         request.response = response("parent")
         return request
 
-    for _ in range(3):
+    for _ in range(4):
         await run_call(agent, ctx, core)
-    assert agent.llm.acall.await_count == 3
+    assert agent.llm.acall.await_count == 4
+    # Only successful changes refresh messages, including replacement of an
+    # existing summary whose range tag stays the same.
+    assert agent.runtime._build_messages.await_count == 2
+    assert agent.event_manager["1..3"].summary_text == "revised"
     assert summarizer._unsub_llm is not None
     await summarizer.aclose()
 
