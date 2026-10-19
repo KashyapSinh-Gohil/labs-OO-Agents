@@ -1,15 +1,15 @@
 # Configure a model without paid checks
 
-You can write a model configuration yourself, or ask an agent using the
-[nooa-model-configuration](../skills/nooa-model-configuration/SKILL.md) skill to do it.
-Neither requires a model API call.
-Use the endpoint's documentation for its exact model ID, API format and limits;
-leave anything unknown unset rather than guessing.
+You can add a model to NOOA by editing `llm_config.yaml` yourself. This sends no
+requests to the model. An agent can do it for you with the
+[nooa-model-configuration](../skills/nooa-model-configuration/SKILL.md) skill.
+
+Get the exact model ID, API format, and limits from the endpoint's
+documentation. Leave out anything you do not know.
 
 ## Write the configuration
 
-Add an entry to `llm_config.yaml`, preserving any existing models. Replace the
-example endpoint and model ID with yours:
+Add an entry under `models:` and keep any existing entries:
 
 ```yaml
 models:
@@ -21,11 +21,18 @@ models:
     max_tokens: 8192
 ```
 
-`my-model` is the local name your agents use. `your-model` is the exact ID the
-endpoint expects. The extra leading `openai/` selects the current runtime's
-OpenAI-compatible transport; it is not part of the model ID sent to the endpoint.
-Keep a route prefix that is part of the endpoint's actual ID after this extra
-prefix. The API format determines these two fields:
+| Setting | What it means |
+|---|---|
+| `my-model` | The alias your agents use. |
+| `model_name` | A prefix (`openai/` or `anthropic/`, see below), then the exact model ID the endpoint expects. The prefix is not sent. |
+| `client_type` | `completion` or `responses`, see below. |
+| `api_base` | The API base URL, not the full request URL. Leave off `/chat/completions`, `/responses`, or `/messages`. |
+| `api_key_env` | The environment variable that holds the key. Never put the key itself in this file. Use `''` for a local server with no key. |
+| `max_tokens` | The reply limit per request, including reasoning. Use what you need, not the model's maximum. Connect suggests 32,768 when nothing better is known. |
+| `context_window` | Optional. The model's context window, if documented. |
+| `media_inputs` | Optional. Which media the model can receive. See [below](#explicit-media-inputs-migration). |
+
+Pick `model_name` and `client_type` by the endpoint's API:
 
 | Endpoint API | `model_name` | `client_type` |
 |---|---|---|
@@ -33,35 +40,24 @@ prefix. The API format determines these two fields:
 | OpenAI Responses | `openai/your-model` | `responses` |
 | Anthropic Messages | `anthropic/your-model` | `completion` |
 
-Use the API base URL, not the `/chat/completions`, `/responses`, or `/messages`
-request URL. A model's name alone does not tell you which interface its server
-accepts. Keep the key in the named environment variable or NOOA's secrets
-configuration, never as a literal value in this YAML. Unauthenticated local
-servers can use `api_key_env: ''`.
+For Anthropic, set `api_base` to the server root without the final `/v1`.
 
-For the current Anthropic client, use the server root without the final `/v1`:
-the client appends `/v1/messages`. Connect normalizes this when saving the entry.
+For Responses entries, also add:
 
-If documented for your route, add `context_window` as a capacity hint. It is
-not an output-token allocation. Set `max_tokens` to the reply budget you want,
-not the model's advertised maximum; 32,768 is Connect's fallback starting budget
-when no recommendation is available. Keep it within the model's documented
-limits. Responses clients translate this to `max_output_tokens` on the wire.
-For stateless Responses entries, also set `store: false` and
-`include: [reasoning.encrypted_content]` to carry reasoning between turns.
-If the endpoint rejects that include field, explicitly set `include: []` and
-record that reasoning retention has not been confirmed. Connect checks this
-automatically when probes are approved.
-Add reasoning-level request blocks only when
-you know their exact shape; see [reasoning levels](reasoning-levels.md).
-Do not infer optional encrypted-reasoning or explicit-cache support from an
-OpenAI-compatible URL. Unknown capabilities remain untested.
+```yaml
+    store: false
+    include: [reasoning.encrypted_content]
+```
+
+This keeps the model's reasoning between turns. If the endpoint rejects
+`include`, set `include: []`.
+
+To add reasoning levels, see [reasoning levels](reasoning-levels.md). Only add
+request settings whose exact form you know.
 
 ### Decision models
 
-Decision models use the same flat ``models`` registry. ``client_type`` selects
-the client implementation; aliases are ordinary names and are not grouped by
-model category:
+Decision models go in the same `models:` list, with `client_type: decision`:
 
 ```yaml
 models:
@@ -73,17 +69,17 @@ models:
     api_key_env: OPENROUTER_API_KEY
 ```
 
-The ``endpoint`` is the complete decisions request URL; NOOA does not append a
-chat-style path. ``api_style`` selects the wire format: ``systemone`` for System
-One endpoints, or ``openai`` for OpenAI's ``/v1/decisions`` (for example
-``endpoint: https://api.openai.com/v1/decisions`` with ``model_name:
-gpt-6-luna``). Use the alias through ``decision_model="decisions"`` on an
-agent or method. Calling ``get_llm_client("decisions")`` is rejected because a
-decision client does not implement chat generation.
+- `endpoint` is the full decisions request URL. NOOA adds nothing to it.
+- `api_style` is `systemone` for System One endpoints, or `openai` for OpenAI's
+  Decisions API (for example `endpoint: https://api.openai.com/v1/decisions`
+  with `model_name: gpt-6-luna`).
+- Use the alias with `decision_model="decisions"` on an agent or method.
+  `get_llm_client("decisions")` does not work: decision models do not chat.
+- Decision models take no `media_inputs`.
 
 ## Check the file locally
 
-This loads the file and confirms that the alias exists without calling a model:
+This loads the file and checks that the alias exists. It sends no requests:
 
 ```python
 from pathlib import Path
@@ -94,19 +90,18 @@ assert "my-model" in entries
 print("Model configuration loaded; endpoint and credentials have not been tested.")
 ```
 
-To make a custom file available to subsequent processes, include its path in
-`NEMO_OO_LLM_CONFIG`. The normal user file is `llm_config.yaml` in NOOA's user
-configuration directory. To inspect the active file chain, call
-`nooa.llm_config.llm_config_chain()`. Later files can override earlier aliases.
-Local loading does not verify credentials, endpoint availability or provider
-support. A later generation call will use the provider and may incur charges.
+This does not test the key or the endpoint. The first real request will, and it
+may cost money.
+
+NOOA reads `llm_config.yaml` from its user configuration directory. To use
+another file, add its path to `NEMO_OO_LLM_CONFIG`. Later files override aliases
+from earlier ones; `nooa.llm_config.llm_config_chain()` lists the files in use.
 
 ## Use Connect without generation calls
 
-The wizard's `--no-probe` (or `--probe none`) option disables interface, typed
-text baseline, tool, reasoning and media generation checks.
-It may still fetch a model list and public catalogue metadata. To avoid even
-those requests, supply the model and use `--no-catalogue` as well:
+`nooa connect` can write the entry for you without test requests. Add
+`--no-probe` to skip model checks and `--no-catalogue` to skip public model
+details:
 
 ```sh
 uv run nooa connect your-model --as my-model \
@@ -115,20 +110,7 @@ uv run nooa connect your-model --as my-model \
   --output llm_config.yaml
 ```
 
-This is an explicit **manual, unverified** setup. The save review labels it
-`Connection: Unverified (manual setup; no model checks)`. You still confirm before saving
-or replacing an alias (or explicitly use `--yes`). With checks approved, the
-wizard instead requires a correct, complete configured typed NOOA `-> int`
-baseline before saving; failed/missing/incomplete evidence or budget exhaustion
-before that baseline stops registry and key writes, even with `--yes`. Plain
-interface acceptance is insufficient. The baseline uses the runtime's native
-scalar JSON value contract (`{"value": 323}` for `17 * 19`), requiring structured
-output support beyond plain text acceptance (Anthropic may use a schema tool).
-It is a bounded one-shot Predict call, not an iterative repair agent. If your
-endpoint lacks that contract, deliberately use the manual command above rather
-than approving paid checks and accepting an ordinary save prompt.
-
-The equivalent credential-free setup for a decision model is:
+For a decision model:
 
 ```sh
 uv run nooa connect typesafe/jev-1.13 --as decisions \
@@ -137,21 +119,19 @@ uv run nooa connect typesafe/jev-1.13 --as decisions \
   --no-probe --no-catalogue --output llm_config.yaml
 ```
 
-You still confirm before saving or replacing an alias. For agent-assisted setup,
-ask: “Use the `nooa-model-configuration` skill to configure this model without API
-calls. Preserve my other entries, use an environment-variable name for the key,
-and validate the file locally only.” See [Connect](model-connect.md) for the
-automatic checks if you later want to test the endpoint.
+The entry is saved as **unverified**. Connect still asks before saving (skip with
+`--yes`). See [Connect](model-connect.md) to test the model later.
+
+To ask an agent: "Use the `nooa-model-configuration` skill to configure this
+model without API calls. Keep my other entries, use an environment variable for
+the key, and check the file locally only."
 
 ## Explicit media inputs (migration)
 
-**New default: text-only.** Previously attachments were forwarded without an
-explicit declaration. Existing multimodal entries and direct Python clients
-must opt in to keep sending media; no model names, catalogue metadata, endpoint
-responses or unrequested probes enable inputs implicitly. In Connect's explicitly
-approved **TEST** mode, successful generated-media self-reports add permissions
-to the reviewed list before saving; the library's probe results alone never
-mutate declarations. See [Connect media setup](model-connect.md#choose-media-inputs-during-setup).
+A model receives media only if its entry lists the kinds in `media_inputs`.
+Without `media_inputs`, or with `media_inputs: []`, the model is text-only.
+Media used to be sent without this setting, so add it to existing entries for
+models that accept media.
 
 ```yaml
 models:
@@ -163,6 +143,23 @@ models:
     media_inputs: []
 ```
 
+| Value | Sends |
+|---|---|
+| `image` | Images |
+| `audio` | Audio |
+| `video` | Video |
+| `pdf` | Files with MIME type exactly `application/pdf` |
+
+- List only kinds the endpoint really supports. NOOA does not check.
+- `pdf` covers only `application/pdf`. Other files, such as Word documents, are
+  never sent. A `.pdf` file name alone is not enough.
+- A model with no `media_inputs` setting logs a one-time warning that it is
+  text-only. Add `media_inputs: []` to silence it.
+- Each entry has its own list. A config file that redefines an alias replaces
+  the whole entry, including `media_inputs`.
+
+For Python clients, pass the same list:
+
 ```python
 from nooa.unifiedllm import CompletionClient, ResponsesClient
 
@@ -170,62 +167,21 @@ chat = CompletionClient("openai/your-model", media_inputs=["image", "audio"])
 responses = ResponsesClient("openai/your-model", media_inputs=["image", "pdf"])
 ```
 
-Connect's optional TEST mode asks the model whether it can access and interpret
-one original generated attachment per selected format, using strict boolean
-Agent/Predict methods. This is a self-report, not an accuracy benchmark. Only a
-validated true with a complete final answer and observed attachment/settings can
-newly enable an input. A valid false displays **Not available**; existing manual
-permissions remain unless you change them. See [media tests](model-connect.md#choose-media-inputs-during-setup)
-for native API mapping limits and the shared approval/budget contract.
+`get_llm_client("vision-model", media_inputs=[])` replaces the configured list.
 
-`media_inputs` accepts a list of distinct `image`, `audio`, `video`, `pdf`
-values (Python constructors also accept a tuple). Omission, null and `[]` all
-mean text-only. Unknown values, scalar strings and duplicates are errors.
-It is a **client setting**, not a provider parameter: `call`/`acall` and
-`extra_body` cannot set it. Factory overrides such as
-`get_llm_client("vision-model", media_inputs=[])` replace, not union, the list.
-Later YAML layers replace an entire alias; a replacement entry without this
-field is text-only. Existing clients keep their own declaration until replaced.
+### What happens to media the model cannot receive
 
-| Input | Recognized attachment blocks | MIME mapping |
-|---|---|---|
-| `image` | `image_url`, `input_image`, `image` | `image/*` |
-| `audio` | `input_audio`, `audio`, `output_audio` | `audio/*` |
-| `video` | `video_url`, `input_video`, `video` | `video/*` |
-| `pdf` | `file`, `input_file`, `document` | **Exactly `application/pdf`** |
+`show()` in agent code always works. If the model is not set up for that kind of
+media, the next request replaces it with a short note, for example:
 
-These are configuration categories, **not guarantees of provider/codec
-support**. Image/audio/video block kinds suffice for remote URLs or opaque
-references without MIME metadata; when a MIME hint is present it must match
-the category. MIME is read only from documented `mime_type`/`media_type`/`format`
-hints or a data URL in the attachment slot, never by fetching a URL or decoding
-content. A file must carry an exact PDF MIME hint or
-`data:application/pdf;base64,...`; a `.pdf` filename/URL or an untyped `file_id`
-is not sufficient. Word documents, generic binary files and other file types
-are not enabled by `pdf`. No conversion is attempted.
+- `[An image was removed here because this model is not set up to receive images.]`
+- `[A file was removed here. Only PDF files can be sent to a model.]`
 
-During model execution, `show()` raises `ValueError` immediately if the current
-client does not enable the attachment type, including when `media_inputs` is
-missing. The error explains how to enable it in this model's YAML entry, through
-Connect, or on a Python client. For example, video requires:
+Stored history is not changed. If you switch to a model that accepts the media,
+it is sent again.
 
-```yaml
-media_inputs: [video]  # Include any other inputs you want to keep.
-```
+To let a model receive it, add the kind to its entry, for example
+`media_inputs: [video]`, and keep any kinds already listed.
 
-For a Python client, pass `media_inputs=["video"]`. Only enable types the endpoint
-supports. A rejected `show()` does not capture the attachment or print a success
-acknowledgement. This applies to in-process execution and worker-local `show()`
-in the sandbox; it does not change the separate sandbox restrictions on callable
-skill helpers. Enabling the type permits sending it; it does not verify provider
-support or guarantee inspection before the method returns.
-
-Outgoing fresh and historical attachments outside the explicit list are replaced
-with a short **attachment not inspected** notice on a request-owned view.
-Stored events, Python media objects, caller dictionaries, tool order and native
-reasoning remain unchanged; switching to an enabled client can send the original
-history again. Model/endpoint/provider/custom-client overrides do not inherit the
-old route's permissions: construct a separately configured client for that route.
-Changing credentials alone does not change the declaration. Opaque signed
-assistant media is not recursively rewritten: an unsupported disabled native
-media part raises an actionable replay error rather than corrupting its envelope.
+Connect can test media for you with generated samples. See
+[Connect media setup](model-connect.md#choose-media-inputs-during-setup).
