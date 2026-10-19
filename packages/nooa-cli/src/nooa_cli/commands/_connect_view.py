@@ -14,20 +14,13 @@ import click
 
 @contextmanager
 def quiet_provider_messages():
-    """Hide setup banners while Connect displays progress or emits stage JSON.
-
-    Tracing still initializes and exports normally. Its internal target is not
-    a Connect diagnostic, even when the user requests qualification details.
-    """
-    from nooa.tracing import suppress_tracing_announcements
-
+    """Hide legacy-library help banners while this CLI displays safe outcomes."""
     legacy = sys.modules.get("litellm")
     previous = getattr(legacy, "suppress_debug_info", False)
     if legacy is not None:
         legacy.suppress_debug_info = True
     try:
-        with suppress_tracing_announcements():
-            yield
+        yield
     finally:
         if legacy is not None:
             legacy.suppress_debug_info = previous

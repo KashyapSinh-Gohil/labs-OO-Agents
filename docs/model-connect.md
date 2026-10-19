@@ -215,8 +215,10 @@ guesses this from the model name or published details. See
 In the wizard, choose one:
 
 - **Test all media inputs (generated samples).** Connect sends one small
-  generated sample per format and asks the model if it can read it. Formats that
-  pass are enabled. This uses the budget you already approved.
+  generated sample per format to check that this model accepts it through this
+  connection. Formats that pass are enabled for this model entry. This uses the
+  budget you already approved. It does not check how well the model understands
+  the media.
 - **Choose media inputs manually.** No requests. The choice is saved as
   unverified.
 
@@ -228,7 +230,8 @@ Test limits:
 - Image and PDF are tested on all three API styles.
 - Audio and video are tested only with `--api-style chat`. On other styles they
   are skipped, not proven unsupported.
-- **Not available** means the model said it cannot read that format.
+- **Not available** means the check did not show that this model accepts that
+  format through this connection.
 
 From the command line:
 

@@ -453,3 +453,16 @@ def test_missing_media_inputs_warns_once_that_the_model_is_text_only(caplog):
     warnings = [r.getMessage() for r in caplog.records if "media_inputs" in r.getMessage()]
     assert len(warnings) == 1
     assert "'plain-alias'" in warnings[0] and "text-only" in warnings[0]
+
+
+def test_same_kind_hints_with_different_subtypes_keep_the_kind():
+    block = {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,AA", "format": "image/jpeg"},
+    }
+    assert attachment_kind(block) == "image"
+    pdf_label_word_data = {
+        "type": "file",
+        "file": {"file_data": "data:application/msword;base64,AA", "format": "application/pdf"},
+    }
+    assert attachment_kind(pdf_label_word_data) == "file"

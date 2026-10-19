@@ -104,7 +104,8 @@ def text_baseline_reason(record: dict) -> str:
 def check_status(name: str, record: dict, *, missing_reasoning=False) -> str:
     """One verdict policy for progress rows, JSON stages and final summaries."""
     outcome = record.get("outcome")
-    if name == "routing" and outcome != "not_probed":
+    # Decision models have no text baseline; their routing check stands alone.
+    if name == "routing" and outcome != "not_probed" and record.get("client") != "decision":
         if record.get("baseline_kind") != "interface_acceptance":
             return "passed" if text_baseline_passed(record) else "attention"
     if name.startswith("media:") and outcome == "passed":

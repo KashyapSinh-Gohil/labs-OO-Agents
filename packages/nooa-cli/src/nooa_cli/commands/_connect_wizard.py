@@ -843,6 +843,9 @@ def configure_media_inputs(state: WizardState) -> bool:
         previous = validate_media_inputs(state.editing.get("media_inputs"))
     if state.test_media_inputs is not None:
         state.test_media_inputs = prompts.parse_media_inputs(state.test_media_inputs)
+    elif state.api_style in connect.DECISION_API_STYLES:
+        state.media_inputs = []  # Decision models take no media.
+        return True
     elif not state.yes and state.approval == "all":
         mode = prompts.choose_media_mode(editing=bool(state.editing))
         if mode == "test":
@@ -1054,7 +1057,11 @@ def baseline_allows_save(state: WizardState) -> bool:
         return True
     entry = state.result.entry if state.result is not None else {}
     record = entry.get("provenance", {}).get("probes", {}).get("routing", {})
-    if text_baseline_passed(record):
+    if state.api_style in connect.DECISION_API_STYLES:
+        # Decision models have no text baseline: the accepted decision check is the gate.
+        if connect.check_status("routing", record) == "passed":
+            return True
+    elif text_baseline_passed(record):
         return True
     reason = view.connection_detail(record)
     # Only sanitized display facts: never echo raw provider errors or replies.

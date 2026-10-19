@@ -49,7 +49,7 @@ _KINDS: dict[str, Literal["image", "audio", "video", "file"]] = {
 }
 
 
-def _mime(block: Mapping[str, Any]) -> str | None:
+def _mime_hints(block: Mapping[str, Any]) -> set[str]:
     # Compare ALL documented hints/data URLs: a PDF label must not hide a
     # conflicting Word data URL. Unknown bytes are never fetched or decoded.
     nodes = [block]
@@ -77,7 +77,7 @@ def _mime(block: Mapping[str, Any]) -> str | None:
             value = node.get(key)
             if isinstance(value, str) and value.startswith("data:"):
                 hints.add(value[5:].split(";", 1)[0].split(",", 1)[0].lower())
-    return next(iter(hints)) if len(hints) == 1 else "conflicting/unsupported" if hints else None
+    return hints
 
 
 def attachment_kind(block: Mapping[str, Any]) -> AttachmentKind | None:
@@ -90,9 +90,10 @@ def attachment_kind(block: Mapping[str, Any]) -> AttachmentKind | None:
     kind = _KINDS.get(block.get("type"))
     if kind is None:
         return None
-    mime = _mime(block)
+    hints = _mime_hints(block)
     if kind == "file":
-        return "pdf" if mime == "application/pdf" else "file"
-    if mime is not None and not mime.startswith(kind + "/"):
-        return "file"  # mismatched declarations never broaden permissions
-    return kind
+        # Every hint must say application/pdf: a PDF label cannot hide a Word data URL.
+        return "pdf" if hints == {"application/pdf"} else "file"
+    if any(not hint.startswith(kind + "/") for hint in hints):
+        return "file"  # a hint of another kind never broadens permissions
+    return kind  # e.g. image/jpeg format with an image/png data URL is still an image
