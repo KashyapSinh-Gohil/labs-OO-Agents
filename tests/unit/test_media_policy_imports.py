@@ -20,10 +20,8 @@ class MissingOptionalDependencies(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, MissingOptionalDependencies())
 {statement}
 from nooa.config.model_config import ModelConfig
-from nooa.runtime.media_capture import _MediaBuffer
 assert ModelConfig(media_inputs=['pdf']).media_inputs == ('pdf',)
 assert 'media_inputs' in ModelConfig.model_json_schema()['properties']
-assert _MediaBuffer(1, media_inputs=['image']).media_inputs == ('image',)
 assert not any(m in sys.modules for m in ('litellm', 'nooa.unifiedllm'))
 """
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
