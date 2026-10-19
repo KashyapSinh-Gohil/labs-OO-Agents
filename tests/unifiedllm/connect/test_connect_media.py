@@ -92,7 +92,7 @@ async def test_media_reaches_runtime_wire_and_only_validated_access_passes(
     messages = bodies[-1].get("messages", bodies[-1].get("input"))
     content = next(m["content"] for m in messages if isinstance(m.get("content"), list))
     assert any(block.get("type") != "text" for block in content)
-    assert "not inspected" not in json.dumps(content).lower()
+    assert "was removed here" not in json.dumps(content).lower()
     assert bodies[-1].get("max_tokens", bodies[-1].get("max_output_tokens")) == 1000
     assert "media_inputs" not in bodies[-1]
     record = result.entry["provenance"]["probes"][f"media:{kind}"]
@@ -107,7 +107,7 @@ async def test_media_reaches_runtime_wire_and_only_validated_access_passes(
         url = block["video_url"]["url"]
         assert url.startswith("data:video/mp4;base64,")
         assert base64.b64decode(url.split(",", 1)[1]) == video_fixture()
-        assert "not inspected" not in content[0]["text"]
+        assert "was removed here" not in content[0]["text"]
     if kind == "audio":
         assert base64.b64decode(content[-1]["input_audio"]["data"]).startswith(b"RIFF")
 

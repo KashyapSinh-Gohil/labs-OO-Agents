@@ -3,32 +3,37 @@
 """Explicit, route-local media permissions; no discovery or payload inspection."""
 
 from collections.abc import Mapping
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, get_args
 
 from pydantic import BeforeValidator
 
 MediaInput = Literal["image", "audio", "video", "pdf"]
+"""A kind of media a model can be allowed to receive (its ``media_inputs``)."""
+
+AttachmentKind = Literal["image", "audio", "video", "pdf", "file"]
+"""What an attachment is: a ``MediaInput``, or ``"file"`` for any file that is not a PDF."""
+
+_MEDIA_INPUTS: frozenset[str] = frozenset(get_args(MediaInput))
 
 
-def validate_media_inputs(value: Any) -> tuple[MediaInput, ...]:
+def validate_media_inputs(value: object) -> tuple[MediaInput, ...]:
     """Absent/null/empty is text-only; reject strings, unknowns and duplicates."""
     if value is None:
         return ()
     if not isinstance(value, (list, tuple)):
         raise ValueError("media_inputs must be a list of image, audio, video, pdf")
-    if any(
-        not isinstance(item, str) or item not in {"image", "audio", "video", "pdf"}
-        for item in value
-    ):
+    if any(not isinstance(item, str) or item not in _MEDIA_INPUTS for item in value):
         raise ValueError("media_inputs values must be image, audio, video, pdf")
     if len(set(value)) != len(value):
         raise ValueError("media_inputs must not contain duplicates")
-    return tuple(value)
+    return tuple(value)  # type: ignore[return-value]  # checked against MediaInput above
 
 
 MediaInputs = Annotated[tuple[MediaInput, ...], BeforeValidator(validate_media_inputs)]
 
-_KINDS = {
+# Content-block ``type`` -> attachment kind. Every ``file`` kind is narrowed to
+# ``pdf`` or ``file`` by its MIME type in attachment_kind().
+_KINDS: dict[str, Literal["image", "audio", "video", "file"]] = {
     "image_url": "image",
     "input_image": "image",
     "image": "image",
@@ -75,8 +80,13 @@ def _mime(block: Mapping[str, Any]) -> str | None:
     return next(iter(hints)) if len(hints) == 1 else "conflicting/unsupported" if hints else None
 
 
-def attachment_kind(block: Mapping[str, Any]) -> str | None:
-    """Known wire kinds; PDF requires exactly application/pdf, not a suffix/id."""
+def attachment_kind(block: Mapping[str, Any]) -> AttachmentKind | None:
+    """Return what a content block attaches, or None for text and unknown blocks.
+
+    ``block`` is a provider message block (JSON), hence ``Mapping[str, Any]``.
+    A file counts as ``"pdf"`` only when its MIME type is exactly
+    ``application/pdf``; a ``.pdf`` name or a file ID alone is not enough.
+    """
     kind = _KINDS.get(block.get("type"))
     if kind is None:
         return None

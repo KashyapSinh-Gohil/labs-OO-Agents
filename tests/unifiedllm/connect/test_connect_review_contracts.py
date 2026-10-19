@@ -42,7 +42,6 @@ async def test_schema_tool(monkeypatch, kind, value):
     )
     records = result.entry["provenance"]["probes"]
     r = records["media:" + kind]
-    print("SCHEMA", kind, value, json.dumps(connect.public_record(r)))
     assert text_baseline_passed(records["routing"]) and len(sent) == 2
     assert r["typed_result_validated"] is True and r["access_reported"] is value
     assert r["outcome"] == ("passed" if value else "unavailable")
@@ -58,7 +57,6 @@ async def test_coercion(monkeypatch, value):
     )
     result = await connect.check_stage(plan(), "routing", api_key="fake")
     r = result.entry["provenance"]["probes"]["routing"]
-    print("COERCION", repr(value), text_baseline_passed(r))
     assert text_baseline_passed(r)
 
 
@@ -72,7 +70,6 @@ async def test_selected_cap(monkeypatch):
     p.entry["reasoning_level"] = "high"
     result = await connect.check_stage(p, "routing", api_key="fake")
     r = result.entry["provenance"]["probes"]["routing"]
-    print("CAP", json.dumps(connect.public_record(r)), "sends", len(sent))
     assert len(sent) == 1 and text_baseline_passed(r)
     assert json.loads(sent[0].content)["max_tokens"] == 2000
     assert r["configured_reply_tokens"] == r["tested_reply_tokens"] == 2000
@@ -90,7 +87,6 @@ async def test_missing_finish(monkeypatch, finish):
     mock_http(monkeypatch, handle)
     result = await connect.check_stage(plan(), "routing", api_key="fake")
     r = result.entry["provenance"]["probes"]["routing"]
-    print("FINISH", repr(finish), json.dumps(connect.public_record(r)))
     assert text_baseline_passed(r)
 
 

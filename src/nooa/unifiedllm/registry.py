@@ -70,6 +70,8 @@ if TYPE_CHECKING:
     from nooa.unifiedllm import UnifiedLLM
 
 logger = logging.getLogger(__name__)
+# Aliases already warned about a missing media_inputs setting (warn once each).
+_warned_text_only: set[str] = set()
 
 # Serializes the (_loaded, MODELS) check-and-mutate so concurrent
 # ensure_loaded() / reload_registry() calls — possible when async agent
@@ -540,6 +542,14 @@ def client_from_config(
             )
 
     params.update(overrides)
+    if config and "media_inputs" not in params and name not in _warned_text_only:
+        _warned_text_only.add(name)
+        logger.warning(
+            "Model %r has no media_inputs setting, so it is text-only: images, audio, "
+            "video and PDFs are not sent to it. Add media_inputs: [...] to its "
+            "llm_config.yaml entry (or media_inputs: [] to silence this warning).",
+            name,
+        )
 
     # Select client class: explicit param > YAML config > default
     client = (

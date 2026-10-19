@@ -70,7 +70,7 @@ async def test_fresh_history_and_python_media_owned(client_type, asynchronous, e
                 kinds = [attachment_kind(block) for block in sent[index]["content"]]
                 assert {kind for kind in kinds if kind} == set(enabled or [])
                 text = " ".join(block.get("text", "") for block in sent[index]["content"])
-                assert text.count("not inspected") == 4 - len(enabled or [])
+                assert text.count("was removed here") == 4 - len(enabled or [])
             assert sent[1]["role"] == "assistant"
             # Even a provider mutating its payload cannot alter future history.
             sent[0]["content"][0]["text"] = "provider edit"
@@ -286,7 +286,7 @@ async def test_route_override_payload_clears_media(client_type, asynchronous):
                 else:
                     client.call(messages, **overrides)
                 sent = wire.call_args.kwargs["input" if responses else "messages"]
-                assert "not inspected" in sent[0]["content"][0]["text"]
+                assert "was removed here" in sent[0]["content"][0]["text"]
                 assert client.media_inputs == tuple(ALL)
 
 
@@ -303,7 +303,7 @@ def test_top_level_assistant_audio_cannot_bypass_text_only(client_type, enabled)
             sent = wire.call_args.kwargs["input" if responses else "messages"][0]
             assert ("audio" in sent) == bool(enabled)
             if not enabled:
-                assert "not inspected" in str(sent["content"])
+                assert "was removed here" in str(sent["content"])
     assert original == before
 
 
@@ -316,7 +316,7 @@ def test_conflicting_mime_cannot_broaden_permission(wrapper):
     }
     assert attachment_kind(block) == "file"
     assert (
-        "not inspected"
+        "was removed here"
         in filter_media_messages([{"role": "user", "content": [block]}], tuple(ALL))[0]["content"][
             0
         ]["text"]
@@ -349,7 +349,7 @@ def test_responses_tool_media_and_metadata_preserved(native_output, enabled):
             if enabled:
                 assert sent["output"][-1]["cache_control"] == {"type": "ephemeral"}
             else:
-                assert "not inspected" in str(sent["output"])
+                assert "was removed here" in str(sent["output"])
     assert original == before
 
 
@@ -415,3 +415,41 @@ def test_reasoning_levels_cannot_smuggle_media_setting(placement):
         CompletionClient("openai/test", reasoning_levels={"high": settings})
     with pytest.raises(ValueError):
         configure_entry({"reasoning_levels": {"high": settings}})
+
+
+def test_tuple_content_is_filtered_like_a_list():
+    """A tuple of blocks is sent like a list, so text-only routes must filter it too."""
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA"}}
+    [message] = filter_media_messages([{"role": "user", "content": (image,)}], ())
+    assert message["content"] == [
+        {
+            "type": "text",
+            "text": "[An image was removed here because this model is not set up to receive images.]",
+        }
+    ]
+    [message] = filter_media_messages([{"role": "user", "content": (image,)}], ("image",))
+    assert message["content"] == [image]
+
+
+def test_native_input_file_mime_hint_is_not_sent():
+    """The MIME hint marks a file_id as a PDF for the media check, but input_file
+    has no MIME field, so it is removed before the request is sent."""
+    block = {"type": "input_file", "file_id": "file-1", "mime_type": "application/pdf"}
+    assert attachment_kind(block) == "pdf"
+    [sent] = ResponsesClient._transform_content_blocks([block])
+    assert sent == {"type": "input_file", "file_id": "file-1"}
+    assert block["mime_type"] == "application/pdf"  # the caller's block is not changed
+
+
+def test_missing_media_inputs_warns_once_that_the_model_is_text_only(caplog):
+    from nooa.unifiedllm import registry
+
+    registry._warned_text_only.discard("plain-alias")
+    config = {"model_name": "openai/test", "api_base": "https://one.test"}
+    with caplog.at_level("WARNING", logger="nooa.unifiedllm.registry"):
+        client_from_config("plain-alias", config).close()
+        client_from_config("plain-alias", config).close()
+        client_from_config("declared-alias", {**config, "media_inputs": []}).close()
+    warnings = [r.getMessage() for r in caplog.records if "media_inputs" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "'plain-alias'" in warnings[0] and "text-only" in warnings[0]

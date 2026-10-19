@@ -11,6 +11,21 @@ from nooa.media_inputs import MediaInputs as MediaInputs
 from nooa.media_inputs import validate_media_inputs as validate_media_inputs
 from nooa.unifiedllm.errors import ReasoningReplayError
 
+_NOTICE_SUBJECT = {
+    "image": ("An image", "images"),
+    "audio": ("An audio clip", "audio"),
+    "video": ("A video", "video"),
+    "pdf": ("A PDF", "PDF files"),
+}
+
+
+def removed_media_notice(kind: str) -> str:
+    """The text the model sees in place of media it cannot receive."""
+    if kind not in _NOTICE_SUBJECT:  # "file": any file that is not a PDF
+        return "[A file was removed here. Only PDF files can be sent to a model.]"
+    subject, plural = _NOTICE_SUBJECT[kind]
+    return f"[{subject} was removed here because this model is not set up to receive {plural}.]"
+
 
 def filter_media_messages(messages, enabled: tuple[MediaInput, ...]):
     """Filter public attachment slots on a new request view, keeping turn objects.
@@ -25,13 +40,16 @@ def filter_media_messages(messages, enabled: tuple[MediaInput, ...]):
             continue
         item = dict(message)
         slot = "output" if item.get("type") == "function_call_output" else "content"
+        if isinstance(item.get(slot), tuple):
+            # A tuple of blocks is sent like a list, so it must be filtered like one.
+            item[slot] = list(item[slot])
         if (
             item.get("role") == "assistant"
             and item.get("audio") is not None
             and "audio" not in enabled
         ):
             item.pop("audio")
-            notice = "[Attachment not inspected: audio input disabled.]"
+            notice = removed_media_notice("audio")
             if isinstance(item.get(slot), str):
                 item[slot] += "\n" + notice
             elif isinstance(item.get(slot), list):
@@ -47,7 +65,7 @@ def filter_media_messages(messages, enabled: tuple[MediaInput, ...]):
                     blocks.append(
                         {
                             "type": "input_text" if slot == "output" else "text",
-                            "text": f"[Attachment not inspected: {kind} input disabled.]",
+                            "text": removed_media_notice(kind),
                         }
                     )
                 else:

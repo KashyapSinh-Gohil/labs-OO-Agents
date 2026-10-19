@@ -838,7 +838,7 @@ def configure_media_inputs(state: WizardState) -> bool:
             state.api_key_env or "",
             existing_entry=previous_entry,
         ).entry
-        previous = validate_media_inputs(route["media_inputs"])
+        previous = validate_media_inputs(route.get("media_inputs"))
     elif state.editing:
         previous = validate_media_inputs(state.editing.get("media_inputs"))
     if state.test_media_inputs is not None:
@@ -882,7 +882,7 @@ def configure_checks(state: WizardState) -> bool:
             state.api_key_env,
             existing_entry=state.existing,
         ).entry
-        state.media_inputs = previous["media_inputs"]
+        state.media_inputs = previous.get("media_inputs", [])
     if state.levels_file and (state.levels or state.reasoning_template):
         raise click.UsageError("Use either --levels-file or --reasoning-template with --levels.")
     state.patches = None
@@ -1176,10 +1176,11 @@ def save_model(state: WizardState) -> bool:
     view.step(4, "Save model")
     if state.no_probe or state.approval == "none":
         view.line("Connection: Unverified (manual setup; no model checks)", fg="yellow")
-    view.line(
-        "Enabled media inputs: "
-        + (", ".join(state.result.entry["media_inputs"]) or "none (text-only)")
-    )
+    if state.api_style not in connect.DECISION_API_STYLES:
+        view.line(
+            "Enabled media inputs: "
+            + (", ".join(state.result.entry["media_inputs"]) or "none (text-only)")
+        )
     if state.test_media_inputs:
         facts = state.result.entry["provenance"]["probes"]
         unavailable = [
@@ -1193,7 +1194,7 @@ def save_model(state: WizardState) -> bool:
                 "Continue with enabled inputs. For unavailable inputs, choose another model or API; choose manually only if you know this connection supports them.",
                 dim=True,
             )
-    tested_media_inputs = list(state.result.entry["media_inputs"])
+    tested_media_inputs = list(state.result.entry.get("media_inputs", []))
     if not state.yes and state.test_media_inputs:
         action = prompts.review_media_inputs(state.result.entry["media_inputs"])
         if action == "manual":
@@ -1201,7 +1202,7 @@ def save_model(state: WizardState) -> bool:
             state.result.entry["media_inputs"] = prompts.choose_media_inputs(
                 state.result.entry["media_inputs"]
             )
-    if tested_media_inputs != state.result.entry["media_inputs"]:
+    if tested_media_inputs != state.result.entry.get("media_inputs", []):
         view.line(
             "Media inputs to save: "
             + (", ".join(state.result.entry["media_inputs"]) or "none (text-only)")

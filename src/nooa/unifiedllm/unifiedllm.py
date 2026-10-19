@@ -2684,6 +2684,11 @@ class ResponsesClient(UnifiedLLM):
                     }
                 )
                 block["type"] = "input_file"
+            elif block.get("type") == "input_file":
+                # A MIME hint only tells the media check that a file_id is a PDF;
+                # input_file has no such field, so strict endpoints reject it.
+                for key in ("mime_type", "media_type", "format"):
+                    block.pop(key, None)
         return result
 
     def _transform_messages(

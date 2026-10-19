@@ -250,7 +250,7 @@ async def test_valid_file_projection_is_owned_and_preserves_pdf_bytes(monkeypatc
             client._prepare_media_messages(messages, {"media_inputs": []}), media_inputs=()
         )
         assert denied[0]["content"][0]["type"] == "input_text"
-        assert "input disabled" in denied[0]["content"][0]["text"]
+        assert "was removed here" in denied[0]["content"][0]["text"]
     finally:
         await client.aclose()
     assert messages == original
