@@ -1,10 +1,9 @@
 # Cache-sharing summaries
 
-`TokenBudgetSummarizer` pauses the agent to summarize older conversation messages,
-then replaces them at the next turn boundary. It asks the same model to summarize the conversation
-using the request the agent just sent, plus a summary instruction. That lets
-the provider reuse its cached input. It does not copy the running agent or
-execute tools.
+`TokenBudgetSummarizer` pauses the agent at the next model-call boundary to
+summarize older conversation messages and replace them before dispatch. It uses
+the freshly rendered request plus a summary instruction, so the provider can
+reuse its cached prefix. It does not copy the running agent or execute tools.
 
 ## Use it
 
@@ -19,8 +18,10 @@ TokenBudgetSummarizer.install(
 await agent.aclose()
 ```
 
-The threshold starts a summary after a completed model call; the agent awaits it
-before continuing. This is a soft trigger, not a strict context cap.
+Provider input usage above the threshold arms compaction for the next model
+call. No summary starts while the current response still has tools to execute.
+This is a soft trigger, not a strict context cap; if there is no next call, no
+summary is needed.
 `preserve_recent` keeps the newest events intact.
 There is no separate summarizer model, mode setting or fallback request.
 `agent.aclose()` waits for registered background components to stop, including
@@ -28,11 +29,16 @@ an unfinished summary. The coding agent calls it automatically on shutdown.
 
 ## What happens to the conversation
 
-The collapse range is chosen before the parent request. Recent events and the
-response just produced remain active. The parent waits while the summary runs;
-other agents and asynchronous work can continue. At most one summary waits or
-runs at a time. A completed summary is applied before the next turn only if the
-original event IDs still match.
+At the next call boundary, after the preceding tools finish, the summarizer
+selects a range from the current active history. This includes any model-driven
+collapse that just completed. It generates and applies the summary while the
+parent is paused, then rebuilds the parent request from the compacted history.
+Selection, generation, and application finish before the next parent model call.
+`preserve_recent` keeps the newest events active.
+
+Other agents and asynchronous work can continue. Source event IDs are checked
+before application, so a concurrent mutation invalidates the summary. This does
+not serialize concurrent calls sharing the same event manager.
 
 ## If a summary fails
 
@@ -62,7 +68,8 @@ middleware rewrites it. Changing tool choice to `none` is deliberately avoided:
 the NVIDIA live probe reported a smaller prompt with that flag despite retained
 tool definitions, so request-message equality alone was insufficient.
 Provider cache hits depend on routing and the backend, but the prompt prefix
-is append-only.
+is append-only relative to the freshly rendered request. That request includes
+new tool results and context, so it need not match the preceding model call.
 
 `reuse_parent_prefix` and a separate `llm=` are no longer supported. The separate
 `MethodSummarizer` feature still summarizes completed methods through its own
@@ -70,12 +77,13 @@ rendered input; it is not used as a token-budget fallback.
 
 ## Code walkthrough: what and why
 
-- `src/nooa/agents/summarization.py`: intercepts the completed request so the
-  fork uses the actual parent prefix, without re-rendering it. Copies only dict
-  and list containers, sharing tools and immutable response/boundary objects.
+- `src/nooa/agents/summarization.py`: records completed-call usage and compacts
+  at the next call boundary. Copies only dict and list containers, sharing tools
+  and immutable response/boundary objects.
   Checks failure, cancellation and event identities before collapsing history.
 - `src/nooa/runtime/actor.py` and `middleware.py`: expose the effective client,
-  cache key and filtered-history status at the existing middleware boundary.
+  cache key, filtered-history status, and a message rebuild callback at the
+  existing middleware boundary.
   The fork uses the same middleware chain, with a task-local recursion guard.
 - `src/nooa/runtime/event_manager.py`: awaits registered close callbacks, so
   the agent does not need to know which background components are installed.
@@ -91,8 +99,8 @@ Keep deployment-specific measurements with the configuration used to run them.
 ## Live release smoke test
 
 `tests/integration/test_summarizer_live.py` installs the summarizer on a real
-CodeAct agent. It requires a summary, application on the next agent
-turn, preservation of three handoff identifiers, access to the raw archived
+CodeAct agent. It requires a summary generated and applied before the next
+agent request, preservation of three handoff identifiers, access to the raw archived
 events, and a cache read on the summary request. It also checks the outgoing
 request prefix and that the fork adds no parent events or tool executions.
 

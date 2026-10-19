@@ -626,12 +626,12 @@ def context_budget(
 class TokenBudgetSummarizer(SummarizationAgent):
     """Summarize old events before the agent continues when input exceeds the budget.
 
-    Fork the completed parent request with a trailing summary
-    instruction. History, tool definitions, output schema, model settings,
+    At the next model-call boundary, fork the freshly rendered request with a
+    trailing summary instruction. History, tool definitions, output schema, model settings,
     cache key and tool choice stay unchanged so the provider can reuse its prefix.
     The appended instruction requests text; executable-tool replies are rejected.
-    Only events present before that request are eligible for collapse; the latest
-    response/tool work stays active.
+    Select events after the preceding response and tools have finished;
+    preserve_recent keeps the newest events active.
 
     The fork never executes tools. A nonempty string returned through one
     return_result call is read as data. Failed or unusable replies leave history
@@ -640,9 +640,11 @@ class TokenBudgetSummarizer(SummarizationAgent):
     parents retain their output schema to preserve the rendered prefix; the
     summary must also satisfy that contract.
 
-    The parent awaits the summary before returning its response to the agent.
-    Completed summaries apply at BeforeTurn, provided the selected event IDs
-    still match. Owners should await aclose() before closing the shared client.
+    Provider input usage arms compaction for the next model call. The parent
+    awaits the summary and applies it immediately, provided the selected event
+    IDs still match, then rebuilds its request before dispatch. No parent tools
+    execute between selection and application. Owners should await aclose()
+    before closing the shared client.
 
     Example:
         from nooa.config.summarizer_config import TokenBudgetConfig
@@ -657,6 +659,7 @@ class TokenBudgetSummarizer(SummarizationAgent):
     _pending_source: Annotated[tuple[tuple[str, str], ...] | None, hidden] = None
     _warned_filtered: Annotated[bool, hidden] = False
     _failed_forks: Annotated[int, hidden] = 0
+    _last_input_tokens: Annotated[int | None, hidden] = None
     _automatic_context_budget: Annotated[bool, hidden] = False
     _automatic_context_budget_percent: Annotated[float, hidden] = 0.8
 
@@ -665,8 +668,9 @@ class TokenBudgetSummarizer(SummarizationAgent):
     def _install(self) -> None:
         if self.target_event_manager is None:
             raise ValueError("Cannot install: target_event_manager is None")
-        self._unsub_before = self.target_event_manager.on("BeforeTurn", self._handle_before_turn)
-        self._unsub_llm = self.target_event_manager.intercept("llm_call", self._fork_after_call)
+        self._unsub_llm = self.target_event_manager.intercept(
+            "llm_call", self._compact_at_call_boundary
+        )
         self._unsub_close = self.target_event_manager.on_close(self.aclose)
         if (
             self._target_agent.event_query is not None
@@ -693,21 +697,24 @@ class TokenBudgetSummarizer(SummarizationAgent):
 
     @hidden
     @no_trace
-    async def _fork_after_call(self, ctx: Any, nxt: Any) -> Any:
-        """Branch the completed request; never clone or execute the parent agent.
+    async def _compact_at_call_boundary(self, ctx: Any, nxt: Any) -> Any:
+        """Compact fresh history before dispatch, after the preceding tools finish.
 
-        The request already contains the parent tools, rendered history and live
-        context. Appending an instruction preserves the cached prefix, including
-        its native responses. The source range is chosen before dispatch: the
-        response and tool work produced by this turn must not be collapsed by a
-        summary that never saw them.
+        Provider usage arms the next call's boundary; no request or event range
+        is retained from that response. Select, summarize, and apply without
+        allowing the parent model or its tools to advance between these steps.
         """
         if _in_summary_fork.get() or self._pending_task is not None:
             return await nxt(ctx)
-        tags = self.target_event_manager.keys()
-        selected = tags[: -self.config.preserve_recent] if self.config.preserve_recent else tags
-        source = tuple((tag, self.target_event_manager[tag].id) for tag in selected)
+        await self._compact_before_call(ctx)
         ctx = await nxt(ctx)
+        usage = ctx.response.usage if ctx.response is not None else None
+        self._last_input_tokens = usage.input_tokens if usage is not None else None
+        return ctx
+
+    @hidden
+    @no_trace
+    async def _compact_before_call(self, ctx: Any) -> None:
         if self._automatic_context_budget and ctx.client is not None:
             budget = context_budget(
                 ctx.client,
@@ -716,21 +723,26 @@ class TokenBudgetSummarizer(SummarizationAgent):
                 fallback_reserve=ctx.runtime.truncation_config.response_reserve_tokens,
             )
             self.config = self.config.model_copy(update={"max_tokens": budget})
-        usage = ctx.response.usage if ctx.response is not None else None
-        if (
-            self._pending_task is not None
-            or not source
-            or usage is None
-            or usage.input_tokens <= self.config.max_tokens
-        ):
-            return ctx
+        tokens = self._last_input_tokens
+        self._last_input_tokens = None
+        if tokens is None or tokens <= self.config.max_tokens:
+            return
+        tags = self.target_event_manager.keys()
+        selected = tags[: -self.config.preserve_recent] if self.config.preserve_recent else tags
+        source = tuple((tag, self.target_event_manager[tag].id) for tag in selected)
+        if not source:
+            return
         start, end = source[0][0], source[-1][0]
         if ctx.filtered_history:
             self._warn_filtered_history()
-            return ctx
+            return
         if ctx.client is None:
             logger.warning("Skipping summary fork: no effective client; history is unchanged.")
-            return ctx
+            return
+
+        if ctx.rebuild_messages is None:
+            logger.warning("Skipping summary fork: request cannot rebuild compacted history.")
+            return
 
         # Allocate only at a fork, not every parent turn. Strings remain shared;
         # dictionaries belong to the fork; read-only response/boundary objects
@@ -743,7 +755,7 @@ class TokenBudgetSummarizer(SummarizationAgent):
             logger.warning(
                 "Could not snapshot summary fork; parent call is unchanged", exc_info=True
             )
-            return ctx
+            return
         messages.append(
             {
                 "role": "user",
@@ -770,10 +782,16 @@ class TokenBudgetSummarizer(SummarizationAgent):
         self._pending_source = source
         self._pending_range = (start, end)
         self._pending_task = asyncio.create_task(self._run_fork(fork))
-        # Pause this agent until compaction finishes. Keep the completed task
-        # pending so history is still replaced at the next BeforeTurn boundary.
-        await self._pending_task
-        return ctx
+        try:
+            await self._pending_task
+            self._apply_pending_summary()
+            if self.target_event_manager.keys() != tags:
+                ctx.messages = await ctx.rebuild_messages(ctx)
+        finally:
+            self._pending_task = None
+            self._pending_source = None
+            self._pending_range = None
+            self._pending_summary = None
 
     @hidden
     @no_trace

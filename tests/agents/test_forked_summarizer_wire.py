@@ -111,13 +111,20 @@ async def test_fork_wire_prefix_and_settings_are_identical(family, monkeypatch):
             request.response = await client.acall(request.messages, **request.params)
             return request
 
+        async def rebuild(request):
+            return _render(family, agent.event_manager.values(), "fixed instructions", "live=1")
+
+        ctx.rebuild_messages = rebuild
         await agent.event_manager.run_middleware("llm_call", ctx, core)
-        assert summarizer._pending_task is not None
-        await summarizer._pending_task
-        assert summarizer._pending_summary == "summary"
+        assert len(bodies) == 1
+        await agent.event_manager.run_middleware("llm_call", ctx, core)
+        assert agent.event_manager["1..2"].summary_text == "summary"
+        assert summarizer._pending_task is None
         summarizer._uninstall()
-    assert len(bodies) == 2
-    parent, fork = bodies
+    assert len(bodies) == 3
+    parent, fork, continuation = bodies
+    assert "stable facts" not in json.dumps(continuation)
+    assert "summary" in json.dumps(continuation)
     key = "input" if family == "openai" else "messages"
     assert {k: v for k, v in parent.items() if k != key} == {
         k: v for k, v in fork.items() if k != key

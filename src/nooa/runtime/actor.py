@@ -1161,6 +1161,28 @@ class ActorRuntime:
                     ),
                 )
 
+                async def _rebuild_messages(request: LLMCallContext) -> list[Any]:
+                    nonlocal _dynamic_context
+                    rebuilt = await self._build_messages(
+                        self._current_method,
+                        call_args=self._current_call.args if self._current_call else (),
+                        call_kwargs=self._current_call.kwargs if self._current_call else {},
+                        tools=request.params.get("tools"),
+                        request_params=request.params,
+                        llm_client=request.client,
+                    )
+                    _dynamic_context = _snapshot_llm_request(
+                        self.event_manager, rebuilt, current_generation_id or ""
+                    )
+                    return rebuilt
+
+                ctx.rebuild_messages = _rebuild_messages
+                # Compaction can fork before dispatch, so the cache key must
+                # already be available to every request through the middleware.
+                ctx.params.setdefault(
+                    "prompt_cache_key", f"{self.agent._agent_id}-{_llm_event_meta['strategy']}"
+                )
+
                 async def _core_llm(ctx: LLMCallContext) -> LLMCallContext:
                     self._update_context_limits(ctx.client, ctx.params)
                     # Tracing hook fires AFTER middleware pre-processing,
