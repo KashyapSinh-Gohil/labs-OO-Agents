@@ -163,16 +163,26 @@ def select_connection(state: WizardState) -> bool:
         state.alias = state.alias or state.edit_model
         routed = state.editing.get("model_name", state.edit_model)
         state.api_style = state.editing.get("api_style") or (
-            "responses"
+            "systemone"
+            if state.editing.get("client_type") == "decision"
+            else "responses"
             if state.editing.get("client_type") == "responses"
             else "anthropic"
             if routed.startswith("anthropic/")
             else "chat"
         )
-        prefix = "anthropic/" if state.api_style == "anthropic" else "openai/"
+        prefix = (
+            ""
+            if state.api_style in connect.DECISION_API_STYLES
+            else "anthropic/"
+            if state.api_style == "anthropic"
+            else "openai/"
+        )
         state.model = routed.removeprefix(prefix)
         state.endpoint = (
-            state.editing.get("api_base")
+            state.editing.get("endpoint")
+            if state.api_style in connect.DECISION_API_STYLES
+            else state.editing.get("api_base")
             or connect.PROVIDERS[
                 "anthropic" if state.api_style == "anthropic" else "openai"
             ].api_base
@@ -208,7 +218,9 @@ def select_connection(state: WizardState) -> bool:
             state.registry.setdefault(name, (entry, state.path))
     state.server_urls = [p.api_base for p in connect.PROVIDERS.values()]
     for entry, _ in state.registry.values():
-        address = entry.get("api_base") if isinstance(entry, dict) else None
+        address = (
+            entry.get("endpoint") or entry.get("api_base") if isinstance(entry, dict) else None
+        )
         if isinstance(address, str):
             try:
                 state.server_urls.append(connect.normalize_endpoint(address))
@@ -302,7 +314,11 @@ def select_connection(state: WizardState) -> bool:
     state.discovery_style = state.api_style or state.default_style
     if state.api_key_env is None:
         default_env = (
-            "ANTHROPIC_API_KEY" if state.discovery_style == "anthropic" else "OPENAI_API_KEY"
+            "DECISION_MODEL_API_KEY"
+            if state.discovery_style in connect.DECISION_API_STYLES
+            else "ANTHROPIC_API_KEY"
+            if state.discovery_style == "anthropic"
+            else "OPENAI_API_KEY"
         )
         state.api_key_env = (
             default_env
@@ -384,10 +400,17 @@ def select_model(state: WizardState) -> bool:
     state.discovery_endpoint = None
     state.endpoint_models = ()
     if state.discovery_file:
+        if state.discovery_style in connect.DECISION_API_STYLES:
+            raise click.UsageError(
+                f"--discovery-file does not apply to --api-style {state.discovery_style}"
+            )
         from ._connect_stages import read_discovery
 
         state.endpoint_models = read_discovery(state.discovery_file, state.endpoint)
         state.discovery_endpoint = state.endpoint
+    if not state.model and state.discovery_style in connect.DECISION_API_STYLES:
+        # Decision endpoints do not list decision models, so ask for the exact ID.
+        state.model = prompts.prompt("Exact decision model ID (Ctrl-C to cancel)")
     while not state.model:
         click.echo("Connecting to the server and listing models...")
         try:
@@ -639,6 +662,12 @@ def configure_metadata(state: WizardState) -> bool:
     )
     state.candidate = None
     state.edited_settings = False
+    if state.api_style in connect.DECISION_API_STYLES:
+        if state.catalogue_model:
+            raise click.UsageError("Decision models do not use --catalogue-model")
+        state.no_catalogue = True
+        click.echo("Decision models skip chat catalogue and endpoint model discovery.")
+        return True
     if state.editing is not None:
         state.candidate = {
             "id": state.editing.get("underlying_model", state.model),
@@ -840,6 +869,10 @@ def configure_media_inputs(state: WizardState) -> bool:
 
 def configure_checks(state: WizardState) -> bool:
     """Configure checks; return False when the user cancels."""
+    if state.api_style in connect.DECISION_API_STYLES and any(
+        (state.levels_file, state.levels, state.reasoning_template, state.reply_tokens)
+    ):
+        raise click.UsageError("Decision models do not use reasoning-level or reply-token options")
     if state.media_inputs is None or state.inherit_media_inputs:
         previous = connect.plan(
             state.alias or "candidate",
@@ -853,7 +886,7 @@ def configure_checks(state: WizardState) -> bool:
     if state.levels_file and (state.levels or state.reasoning_template):
         raise click.UsageError("Use either --levels-file or --reasoning-template with --levels.")
     state.patches = None
-    if state.editing is not None:
+    if state.editing is not None and state.api_style not in connect.DECISION_API_STYLES:
         labels = state.candidate.get("reasoning", {}).get("supported_efforts", [])
         original_levels = state.editing.get("reasoning_levels", {})
         if not state.levels_file and any(label not in original_levels for label in labels):
@@ -890,7 +923,8 @@ def configure_checks(state: WizardState) -> bool:
         existing_entry=state.interfaces.results[state.api_style].entry
         if state.interfaces
         else state.existing,
-        session_checks=state.approval == "all",
+        session_checks=state.approval == "all"
+        and state.api_style not in connect.DECISION_API_STYLES,
         reply_tokens=state.reply_tokens,
     )
     if state.editing is not None:
@@ -959,13 +993,21 @@ def configure_checks(state: WizardState) -> bool:
             "source": "user",
             "template": state.reasoning_template,
         }
-    if "context_window" not in state.proposal.entry:
+    if (
+        state.api_style not in connect.DECISION_API_STYLES
+        and "context_window" not in state.proposal.entry
+    ):
         click.echo(
             "Context limit unknown; NOOA will use its default. Set --context-window if you know the server limit."
         )
     state.configured = connect.configure_entry(
         state.proposal.entry, reply_tokens=state.reply_tokens
     )
+    if state.api_style in connect.DECISION_API_STYLES:
+        state.proposal = connect.refresh_plan(replace(state.proposal, entry=state.configured))
+        state.remaining_estimate = state.proposal.token_estimate
+        view.line("Decision models have no reply-token or reasoning configuration.")
+        return True
     if state.reply_tokens is None and not state.yes:
         output_ceiling = (
             state.configured["provenance"].get("catalogue_limits", {}).get("max_completion_tokens")
@@ -1029,11 +1071,14 @@ def baseline_allows_save(state: WizardState) -> bool:
 
 def run_checks(state: WizardState) -> bool:
     """Run checks; return False when the user cancels."""
-    checks = ["connection", "tools"]
-    if state.proposal.entry.get("reasoning_levels"):
-        checks.append("reasoning")
-    if any(p.name.startswith("media:") for p in state.proposal.probes):
-        checks.append("media inputs")
+    if state.api_style in connect.DECISION_API_STYLES:
+        checks = ["the decision interface"]
+    else:
+        checks = ["connection", "tools"]
+        if state.proposal.entry.get("reasoning_levels"):
+            checks.append("reasoning")
+        if any(p.name.startswith("media:") for p in state.proposal.probes):
+            checks.append("media inputs")
     if state.proposal.session_checks:
         checks.append("conversation")
     view.line(
@@ -1217,15 +1262,18 @@ def save_model(state: WizardState) -> bool:
             f"Warning: {shadow} currently defines this alias and takes precedence over this destination. Update that file or explicitly load {state.path} to use this entry.",
             fg="yellow",
         )
-    view.line(
-        f"Save summary: {prompts.choice_label(state.result.entry['api_style'])} · reply limit {state.result.entry['max_tokens']:,} tokens"
-    )
-    view.line(
-        "Reasoning levels: "
-        + (", ".join(state.result.entry.get("reasoning_levels", {})) or "none configured")
-        + "; default: "
-        + str(state.result.entry.get("reasoning_default", "server default"))
-    )
+    if state.api_style in connect.DECISION_API_STYLES:
+        view.line(f"Save summary: {state.api_style} decision interface")
+    else:
+        view.line(
+            f"Save summary: {prompts.choice_label(state.result.entry['api_style'])} · reply limit {state.result.entry['max_tokens']:,} tokens"
+        )
+        view.line(
+            "Reasoning levels: "
+            + (", ".join(state.result.entry.get("reasoning_levels", {})) or "none configured")
+            + "; default: "
+            + str(state.result.entry.get("reasoning_default", "server default"))
+        )
     if state.yes or prompts.confirm(f"Write model entry to {state.path}?", default=True):
         save_key = False
         if (
@@ -1255,17 +1303,24 @@ def save_model(state: WizardState) -> bool:
         connect.write(state.result.entry, state.path, alias=state.alias)
         click.echo(f"Saved {state.alias} to {state.path}.")
         view.line(
-            "Enabled media inputs: "
+            f"Interface: {state.api_style} · decision model: {state.result.entry['model_name']}"
+            if state.api_style in connect.DECISION_API_STYLES
+            else "Enabled media inputs: "
             + (", ".join(state.result.entry["media_inputs"]) or "none (text-only)")
         )
-        view.line(
-            f"API format: {prompts.choice_label(state.api_style)} · reply limit: {state.result.entry['max_tokens']:,} tokens"
-        )
+        if state.api_style not in connect.DECISION_API_STYLES:
+            view.line(
+                f"API format: {prompts.choice_label(state.api_style)} · reply limit: {state.result.entry['max_tokens']:,} tokens"
+            )
         if state.api_key and not save_key and state.api_key != os.environ.get(state.api_key_env):
             click.echo(
                 f"The key was not saved. Set {state.api_key_env} (or add it to your NOOA secrets file) before using this alias."
             )
-        click.echo(f'Use it in Python: get_llm_client("{state.alias}")')
+        click.echo(
+            f'Use it in Python: get_decision_model("{state.alias}")'
+            if state.api_style in connect.DECISION_API_STYLES
+            else f'Use it in Python: get_llm_client("{state.alias}")'
+        )
         if state.output and not state.working_dir:
             click.echo(
                 "For a custom path, include it in NEMO_OO_LLM_CONFIG or reload_registry(path)."

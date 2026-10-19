@@ -57,6 +57,30 @@ you know their exact shape; see [reasoning levels](reasoning-levels.md).
 Do not infer optional encrypted-reasoning or explicit-cache support from an
 OpenAI-compatible URL. Unknown capabilities remain untested.
 
+### Decision models
+
+Decision models use the same flat ``models`` registry. ``client_type`` selects
+the client implementation; aliases are ordinary names and are not grouped by
+model category:
+
+```yaml
+models:
+  decisions:
+    model_name: typesafe/jev-1.13
+    client_type: decision
+    api_style: systemone
+    endpoint: https://openrouter.ai/api/alpha/decisions
+    api_key_env: OPENROUTER_API_KEY
+```
+
+The ``endpoint`` is the complete decisions request URL; NOOA does not append a
+chat-style path. ``api_style`` selects the wire format: ``systemone`` for System
+One endpoints, or ``openai`` for OpenAI's ``/v1/decisions`` (for example
+``endpoint: https://api.openai.com/v1/decisions`` with ``model_name:
+gpt-6-luna``). Use the alias through ``decision_model="decisions"`` on an
+agent or method. Calling ``get_llm_client("decisions")`` is rejected because a
+decision client does not implement chat generation.
+
 ## Check the file locally
 
 This loads the file and confirms that the alias exists without calling a model:
@@ -103,7 +127,17 @@ output support beyond plain text acceptance (Anthropic may use a schema tool).
 It is a bounded one-shot Predict call, not an iterative repair agent. If your
 endpoint lacks that contract, deliberately use the manual command above rather
 than approving paid checks and accepting an ordinary save prompt.
-For agent-assisted setup,
+
+The equivalent credential-free setup for a decision model is:
+
+```sh
+uv run nooa connect typesafe/jev-1.13 --as decisions \
+  --endpoint https://openrouter.ai/api/alpha/decisions \
+  --api-style systemone --api-key-env OPENROUTER_API_KEY \
+  --no-probe --no-catalogue --output llm_config.yaml
+```
+
+You still confirm before saving or replacing an alias. For agent-assisted setup,
 ask: “Use the `nooa-model-configuration` skill to configure this model without API
 calls. Preserve my other entries, use an environment-variable name for the key,
 and validate the file locally only.” See [Connect](model-connect.md) for the
