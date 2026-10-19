@@ -55,8 +55,27 @@ def setup():
         },
     )
     summarizer._last_input_tokens = 1000  # Previous parent call armed this boundary.
-    ctx.rebuild_messages = AsyncMock(return_value=list(ctx.messages))
+    agent.runtime._build_messages = AsyncMock(
+        side_effect=lambda *args, **kwargs: list(ctx.messages)
+    )
     return agent, summarizer, ctx
+
+
+async def run_call(agent, ctx, core):
+    """Exercise compaction and usage independently of provider dispatch in unit tests.
+
+    Real generate() ordering and rendering are covered by the runtime test below.
+    """
+    from nooa.runtime.actor import _scoped_events_var
+
+    token = _scoped_events_var.set(object() if ctx.filtered_history else None)
+    try:
+        for summarizer in tuple(agent.runtime._compactors):
+            await summarizer._compact_if_needed(agent.runtime, ctx.client, **ctx.params)
+        ctx.messages = await agent.runtime._build_messages(None)
+        return await agent.event_manager.run_middleware("llm_call", ctx, core)
+    finally:
+        _scoped_events_var.reset(token)
 
 
 @pytest.mark.asyncio
@@ -76,11 +95,11 @@ async def test_boundary_blocks_dispatch_and_applies_summary_before_parent():
 
     async def core(request):
         assert agent.event_manager.keys() == ["1..3", "4", "5"]
-        ctx.rebuild_messages.assert_awaited_once()
+        assert agent.runtime._build_messages.await_count == 2
         request.response = parent
         return request
 
-    parent_call = asyncio.create_task(agent.event_manager.run_middleware("llm_call", ctx, core))
+    parent_call = asyncio.create_task(run_call(agent, ctx, core))
     await asyncio.wait_for(entered.wait(), 1)
     assert not parent_call.done()
     assert summarizer._pending_task is not None
@@ -127,7 +146,7 @@ async def test_fork_runs_middleware_without_recursive_forks_or_parent_statistics
         request.response = response("parent")
         return request
 
-    await agent.event_manager.run_middleware("llm_call", ctx, core)
+    await run_call(agent, ctx, core)
     assert summarizer._pending_task is None
     assert len(visits) == 2
     assert agent.llm.acall.await_count == 1
@@ -168,7 +187,7 @@ async def test_bad_or_stale_summary_never_collapses_history(problem, caplog):
         request.response = response("parent")
         return request
 
-    await agent.event_manager.run_middleware("llm_call", ctx, core)
+    await run_call(agent, ctx, core)
     assert summarizer._pending_task is None
     expected = ["1", "2..3", "4"] if problem == "stale" else ["1", "2", "3", "4"]
     assert agent.event_manager.keys() == expected
@@ -191,7 +210,7 @@ async def test_uninstall_cancels_fork_and_removes_middleware():
         request.response = response("parent")
         return request
 
-    parent_call = asyncio.create_task(agent.event_manager.run_middleware("llm_call", ctx, core))
+    parent_call = asyncio.create_task(run_call(agent, ctx, core))
     await asyncio.wait_for(entered.wait(), 1)
     assert summarizer._pending_task is not None
     task = summarizer._pending_task
@@ -201,6 +220,7 @@ async def test_uninstall_cancels_fork_and_removes_middleware():
     with pytest.raises(asyncio.CancelledError):
         await parent_call
     assert agent.event_manager._middleware["llm_call"] == []
+    assert agent.runtime._compactors == []
 
 
 @pytest.mark.asyncio
@@ -223,7 +243,7 @@ async def test_return_result_is_read_as_data_never_executed(result, valid):
         request.response = response("parent")
         return request
 
-    await agent.event_manager.run_middleware("llm_call", ctx, core)
+    await run_call(agent, ctx, core)
     assert agent.event_manager.keys() == (["1..3", "4"] if valid else ["1", "2", "3", "4"])
     summarizer._uninstall()
 
@@ -242,7 +262,7 @@ async def test_unavailable_fork_preserves_history_without_fallback(missing, capl
         request.response = response("parent")
         return request
 
-    await agent.event_manager.run_middleware("llm_call", ctx, core)
+    await run_call(agent, ctx, core)
     assert summarizer._pending_task is None
     summarizer.summarize.assert_not_awaited()
     agent.llm.acall.assert_not_awaited()
@@ -268,27 +288,31 @@ async def test_provider_usage_arms_next_boundary_after_model_collapse():
         request.response = response("parent")
         return request
 
-    await agent.event_manager.run_middleware("llm_call", ctx, core)
+    await run_call(agent, ctx, core)
     assert snapshots == []  # No summary while the response's tools are pending.
     agent.event_manager.collapse("1", "2", "model summary")
     model_summary_id = agent.event_manager["1..2"].id
     ctx.messages = [{"role": "user", "content": "model summary; fact 2; fact 3"}]
-    ctx.rebuild_messages = AsyncMock(return_value=[{"role": "user", "content": "harness summary"}])
+    agent.runtime._build_messages = AsyncMock(
+        side_effect=lambda *args, **kwargs: [
+            {"role": "user", "content": "; ".join(str(e) for e in agent.event_manager.values())}
+        ]
+    )
 
     async def next_core(request):
-        assert request.messages == [{"role": "user", "content": "harness summary"}]
+        assert "harness summary" in str(request.messages)
         assert agent.event_manager.keys() == ["1..3", "4"]
         request.response = response("next parent")
         return request
 
-    await agent.event_manager.run_middleware("llm_call", ctx, next_core)
+    await run_call(agent, ctx, next_core)
     assert snapshots == [(("1..2", model_summary_id), ("3", agent.event_manager["3"].id))]
     assert summarizer._pending_task is None
     await summarizer.aclose()
 
 
 @pytest.mark.asyncio
-async def test_runtime_rebuilds_compacted_request_with_effective_client(monkeypatch):
+async def test_generate_compacts_before_building_parent_request(monkeypatch):
     from nooa.runtime.actor import _current_llm_var, _current_method_var
 
     agent = Agent(llm=FakeLLMClient())
@@ -296,8 +320,17 @@ async def test_runtime_rebuilds_compacted_request_with_effective_client(monkeypa
     for i in range(4):
         agent.event_manager.add(Message(content=f"fact {i}"))
     calls = []
+    order = []
+    build_messages = agent.runtime._build_messages
+
+    async def render(*args, **kwargs):
+        order.append("render")
+        return await build_messages(*args, **kwargs)
+
+    monkeypatch.setattr(agent.runtime, "_build_messages", render)
 
     async def call(messages, **kwargs):
+        order.append("summary" if "Background memory compaction" in str(messages) else "parent")
         calls.append((list(messages), dict(kwargs)))
         return response("summary" if "Background memory compaction" in str(messages) else "done")
 
@@ -315,9 +348,11 @@ async def test_runtime_rebuilds_compacted_request_with_effective_client(monkeypa
     try:
         await agent.runtime.generate(tools=[], tool_choice="auto", temperature=0.3)
         assert len(calls) == 1
+        assert order == ["render", "parent"]
         agent.event_manager.collapse("1", "2", "model summary")
         await agent.runtime.generate(tools=[], tool_choice="auto", temperature=0.3)
         assert len(calls) == 3
+        assert order == ["render", "parent", "render", "summary", "render", "parent"]
         first, fork, continuation = calls
         assert "model summary" in str(fork[0])
         assert "Background memory compaction" in str(fork[0])
@@ -329,6 +364,7 @@ async def test_runtime_rebuilds_compacted_request_with_effective_client(monkeypa
         agent.llm.acall.assert_not_awaited()
     finally:
         await summarizer.aclose()
+        assert agent.runtime._compactors == []
         _current_method_var.reset(method_token)
         _current_llm_var.reset(llm_token)
 
@@ -347,7 +383,7 @@ async def test_fork_preparation_failure_does_not_fail_parent(caplog):
         request.response = response("parent answer")
         return request
 
-    result = await agent.event_manager.run_middleware("llm_call", ctx, core)
+    result = await run_call(agent, ctx, core)
     assert result.response.content == "parent answer"
     assert summarizer._pending_task is None
     assert "fork" in caplog.text.lower()
@@ -377,7 +413,7 @@ async def test_fork_borrows_bound_tools_without_copying_their_owner():
         request.response = response("parent")
         return request
 
-    await agent.event_manager.run_middleware("llm_call", ctx, core)
+    await run_call(agent, ctx, core)
     assert copies == []
     assert agent.llm.acall.call_args.kwargs["tools"][0] is tool
     summarizer._uninstall()
@@ -400,7 +436,7 @@ async def test_unusable_fork_has_no_standalone_fallback():
         request.response = response("parent")
         return request
 
-    await agent.event_manager.run_middleware("llm_call", ctx, core)
+    await run_call(agent, ctx, core)
     assert summarizer._pending_summary is None
     summarizer.summarize.assert_not_awaited()
     agent.llm.acall.assert_awaited_once()
@@ -431,7 +467,7 @@ async def test_structured_parent_preserves_output_contract_without_mutating_pare
         request.response = response("parent")
         return request
 
-    await agent.event_manager.run_middleware("llm_call", ctx, core)
+    await run_call(agent, ctx, core)
     assert agent.llm.acall.call_args.kwargs["output_model"] is ctx.params["output_model"]
     assert ctx.params["output_model"] is BaseModel
     assert agent.event_manager["1..3"].summary_text == "summary"
@@ -457,7 +493,7 @@ async def test_repeated_failures_stop_spending_without_collapsing(caplog, finish
         return request
 
     for _ in range(4):
-        await agent.event_manager.run_middleware("llm_call", ctx, core)
+        await run_call(agent, ctx, core)
     assert agent.llm.acall.await_count == 2
     assert agent.event_manager.keys() == ["1", "2", "3", "4"]
     assert "disabled" in caplog.text.lower()
@@ -475,7 +511,7 @@ async def test_filtered_history_warns_once_and_never_uses_standalone(caplog):
         return request
 
     for _ in range(3):
-        await agent.event_manager.run_middleware("llm_call", ctx, core)
+        await run_call(agent, ctx, core)
     assert len([r for r in caplog.records if "filtered history" in r.message]) == 1
     summarizer.summarize.assert_not_awaited()
     await summarizer.aclose()
@@ -510,7 +546,7 @@ async def test_success_resets_consecutive_failure_stop():
         return request
 
     for _ in range(3):
-        await agent.event_manager.run_middleware("llm_call", ctx, core)
+        await run_call(agent, ctx, core)
     assert agent.llm.acall.await_count == 3
     assert summarizer._unsub_llm is not None
     await summarizer.aclose()
@@ -534,7 +570,7 @@ async def test_trigger_uses_previous_provider_usage_and_preserves_recent(
         request.response = response("parent")
         return request
 
-    await agent.event_manager.run_middleware("llm_call", ctx, core)
+    await run_call(agent, ctx, core)
     assert bool(agent.llm.acall.await_count) is expected
     if expected:
         assert agent.event_manager[f"1..{4 - preserve}"].summary_text == "summary"
@@ -559,7 +595,7 @@ async def test_aclose_cancels_summary_and_waiting_parent():
         request.response = response("parent")
         return request
 
-    parent_call = asyncio.create_task(agent.event_manager.run_middleware("llm_call", ctx, core))
+    parent_call = asyncio.create_task(run_call(agent, ctx, core))
     await asyncio.wait_for(entered.wait(), 1)
     try:
         await agent.aclose()
@@ -627,7 +663,7 @@ async def test_append_only_fork_resists_middleware_prompt_and_tool_rewrites():
         request.response = response("parent")
         return request
 
-    await agent.event_manager.run_middleware("llm_call", ctx, core)
+    await run_call(agent, ctx, core)
     args = agent.llm.acall.call_args
     assert args.args[0][:-1] == ctx.messages
     assert args.kwargs["tools"] == [tool]

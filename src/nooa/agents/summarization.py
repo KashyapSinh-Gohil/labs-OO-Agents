@@ -63,6 +63,7 @@ def _copy_request_containers(value: Any) -> Any:
 if TYPE_CHECKING:
     from nooa.config.summarizer_config import MethodSummarizerConfig, TokenBudgetConfig
     from nooa.events import AfterTurn, EventBase
+    from nooa.runtime.actor import ActorRuntime
     from nooa.runtime.event_manager import EventManager
     from nooa.unifiedllm import UnifiedLLM
 
@@ -642,7 +643,7 @@ class TokenBudgetSummarizer(SummarizationAgent):
 
     Provider input usage arms compaction for the next model call. The parent
     awaits the summary and applies it immediately, provided the selected event
-    IDs still match, then rebuilds its request before dispatch. No parent tools
+    IDs still match. The runtime then builds the parent request. No parent tools
     execute between selection and application. Owners should await aclose()
     before closing the shared client.
 
@@ -668,9 +669,8 @@ class TokenBudgetSummarizer(SummarizationAgent):
     def _install(self) -> None:
         if self.target_event_manager is None:
             raise ValueError("Cannot install: target_event_manager is None")
-        self._unsub_llm = self.target_event_manager.intercept(
-            "llm_call", self._compact_at_call_boundary
-        )
+        self._unsub_llm = self.target_event_manager.intercept("llm_call", self._record_usage)
+        self._target_agent.runtime._compactors.append(self)
         self._unsub_close = self.target_event_manager.on_close(self.aclose)
         if (
             self._target_agent.event_query is not None
@@ -693,28 +693,62 @@ class TokenBudgetSummarizer(SummarizationAgent):
         if self._unsub_llm:
             self._unsub_llm()
             self._unsub_llm = None
+        compactors = self._target_agent.runtime._compactors
+        if self in compactors:
+            compactors.remove(self)
         super()._uninstall()
 
     @hidden
     @no_trace
-    async def _compact_at_call_boundary(self, ctx: Any, nxt: Any) -> Any:
-        """Compact fresh history before dispatch, after the preceding tools finish.
-
-        Provider usage arms the next call's boundary; no request or event range
-        is retained from that response. Select, summarize, and apply without
-        allowing the parent model or its tools to advance between these steps.
-        """
-        if _in_summary_fork.get() or self._pending_task is not None:
-            return await nxt(ctx)
-        await self._compact_before_call(ctx)
+    async def _record_usage(self, ctx: Any, nxt: Any) -> Any:
+        """Record only parent usage to arm compaction for the next generate()."""
         ctx = await nxt(ctx)
-        usage = ctx.response.usage if ctx.response is not None else None
-        self._last_input_tokens = usage.input_tokens if usage is not None else None
+        if not _in_summary_fork.get():
+            usage = ctx.response.usage if ctx.response is not None else None
+            self._last_input_tokens = usage.input_tokens if usage is not None else None
         return ctx
 
     @hidden
     @no_trace
-    async def _compact_before_call(self, ctx: Any) -> None:
+    async def _compact_if_needed(
+        self,
+        runtime: "ActorRuntime",
+        client: "UnifiedLLM | None",
+        *,
+        tools: Any = None,
+        output_model: Any = None,
+        **kwargs: Any,
+    ) -> None:
+        """Select, summarize, and apply before generate() builds its parent request."""
+        if self._pending_task is not None or self._unsub_llm is None:
+            return
+        from nooa.runtime.actor import (
+            _current_strategy_var,
+            _decorator_events_var,
+            _scoped_events_var,
+        )
+        from nooa.runtime.middleware import LLMCallContext
+
+        strategy = _current_strategy_var.get()
+        strategy_name = type(strategy).__name__ if strategy is not None else "default"
+        params = {**kwargs, "tools": tools, "output_model": output_model}
+        params.setdefault("prompt_cache_key", f"{self._target_agent._agent_id}-{strategy_name}")
+        ctx = LLMCallContext(
+            agent=self._target_agent,
+            runtime=runtime,
+            client=client,
+            messages=[],
+            params=params,
+            filtered_history=any(
+                query is not None
+                for query in (
+                    self.target_event_manager.get_event_query(),
+                    _scoped_events_var.get(),
+                    _decorator_events_var.get(),
+                    self._target_agent.event_query,
+                )
+            ),
+        )
         if self._automatic_context_budget and ctx.client is not None:
             budget = context_budget(
                 ctx.client,
@@ -740,14 +774,18 @@ class TokenBudgetSummarizer(SummarizationAgent):
             logger.warning("Skipping summary fork: no effective client; history is unchanged.")
             return
 
-        if ctx.rebuild_messages is None:
-            logger.warning("Skipping summary fork: request cannot rebuild compacted history.")
-            return
-
         # Allocate only at a fork, not every parent turn. Strings remain shared;
         # dictionaries belong to the fork; read-only response/boundary objects
         # travel unchanged so their provider state is not flattened or copied.
         try:
+            ctx.messages = await runtime._build_messages(
+                runtime._current_method,
+                call_args=runtime._current_call.args if runtime._current_call else (),
+                call_kwargs=runtime._current_call.kwargs if runtime._current_call else {},
+                tools=tools,
+                request_params=params,
+                llm_client=client,
+            )
             messages = _copy_request_containers(ctx.messages)
             params = _copy_request_containers(ctx.params)
             params.setdefault("output_model", None)
@@ -785,8 +823,6 @@ class TokenBudgetSummarizer(SummarizationAgent):
         try:
             await self._pending_task
             self._apply_pending_summary()
-            if self.target_event_manager.keys() != tags:
-                ctx.messages = await ctx.rebuild_messages(ctx)
         finally:
             self._pending_task = None
             self._pending_source = None

@@ -138,9 +138,6 @@ class LLMCallContext(BaseModel):
                 Read-only: route overrides belong in params, not a replacement client.
         filtered_history: An event query restricted the rendered history. Consumers
                           must not treat this request as the complete event archive.
-        rebuild_messages: Runtime callback to render current history using this
-                          context's settings after compaction. Returns messages;
-                          the caller assigns them to ``messages``.
         response: ``None`` on the way *in*; set to the ``LLMResponse`` by the
                   innermost handler on the way *out*.
     """
@@ -153,10 +150,6 @@ class LLMCallContext(BaseModel):
     runtime: ActorRuntime | None = None
     client: UnifiedLLM | None = Field(default=None, frozen=True)
     filtered_history: bool = False
-    # Re-render after middleware changes history, using this request's settings.
-    rebuild_messages: Callable[["LLMCallContext"], Awaitable[list[Any]]] | None = Field(
-        default=None, exclude=True, repr=False
-    )
     response: LLMResponse | None = None
 
 

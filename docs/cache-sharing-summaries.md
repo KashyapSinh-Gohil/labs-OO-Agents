@@ -32,7 +32,8 @@ an unfinished summary. The coding agent calls it automatically on shutdown.
 At the next call boundary, after the preceding tools finish, the summarizer
 selects a range from the current active history. This includes any model-driven
 collapse that just completed. It generates and applies the summary while the
-parent is paused, then rebuilds the parent request from the compacted history.
+parent is paused. `generate()` then builds the parent request from the compacted
+history in its normal message-building step.
 Selection, generation, and application finish before the next parent model call.
 `preserve_recent` keeps the newest events active.
 
@@ -81,10 +82,11 @@ rendered input; it is not used as a token-budget fallback.
   at the next call boundary. Copies only dict and list containers, sharing tools
   and immutable response/boundary objects.
   Checks failure, cancellation and event identities before collapsing history.
-- `src/nooa/runtime/actor.py` and `middleware.py`: expose the effective client,
-  cache key, filtered-history status, and a message rebuild callback at the
-  existing middleware boundary.
-  The fork uses the same middleware chain, with a task-local recursion guard.
+- `src/nooa/runtime/actor.py`: explicitly awaits installed compactors before
+  building the parent request. The summarizer renders its own input only when
+  triggered; no message rebuild callback is needed.
+- `llm_call` middleware records parent usage and observes summary requests;
+  summary usage never arms another compaction.
 - `src/nooa/runtime/event_manager.py`: awaits registered close callbacks, so
   the agent does not need to know which background components are installed.
 - `tests/agents/test_forked_summarizer*.py`: check parent-request parity, HTTP

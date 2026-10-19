@@ -111,13 +111,15 @@ async def test_fork_wire_prefix_and_settings_are_identical(family, monkeypatch):
             request.response = await client.acall(request.messages, **request.params)
             return request
 
-        async def rebuild(request):
+        async def render(*args, **kwargs):
             return _render(family, agent.event_manager.values(), "fixed instructions", "live=1")
 
-        ctx.rebuild_messages = rebuild
-        await agent.event_manager.run_middleware("llm_call", ctx, core)
+        from tests.agents.test_forked_summarizer import run_call
+
+        monkeypatch.setattr(agent.runtime, "_build_messages", render)
+        await run_call(agent, ctx, core)
         assert len(bodies) == 1
-        await agent.event_manager.run_middleware("llm_call", ctx, core)
+        await run_call(agent, ctx, core)
         assert agent.event_manager["1..2"].summary_text == "summary"
         assert summarizer._pending_task is None
         summarizer._uninstall()
