@@ -20,7 +20,7 @@ from typing import Annotated
 from nooa import Agent
 from nooa.unifiedllm import get_llm_client
 
-llm = get_llm_client("gpt-4o-mini")    # any litellm model name, or a registry alias
+llm = get_llm_client("my-model")    # alias saved by nooa connect; configure it first
 
 class Summarizer(Agent, llm=llm):
     """Produce concise, faithful summaries."""          # class docstring → static prefix
@@ -43,10 +43,16 @@ Use `Annotated[type, "description"]` on parameters and return types to give the 
 
 ## LLM clients and cascading
 
-Use an already configured registry alias with `get_llm_client("my-model")`.
+Start model onboarding with `uv add "nooa[cli]"` and `uv run nooa connect`,
+with the user's permission for billable checks, or use the configuration skill
+for offline setup. Use an already configured registry alias with
+`get_llm_client("my-model")`.
 For endpoint setup, credentials, registry edits, reply budgets, reasoning-level
 configuration, caching or Connect diagnostics, use
 [nooa-model-configuration](../nooa-model-configuration/SKILL.md).
+For images, audio, video, PDFs, and CodeAct `show()`, use
+[nooa-media](../nooa-media/SKILL.md). Configure each model's `media_inputs`
+with the formats your provider accepts.
 The rest of this section covers how an agent selects and inherits its client.
 
 **Resolution cascade** for which LLM a method uses — first match wins:

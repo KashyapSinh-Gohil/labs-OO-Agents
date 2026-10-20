@@ -119,7 +119,7 @@ Coercion before validation, in order: bare values wrapped to the schema; string 
 
 - **exec_globals** = the agent module's namespace across the full MRO (minus `hidden` names) + method parameters as variables + auto-injected symbols: `self`, `asyncio`, `typing` (+`Annotated/Any/Literal/Optional/Union`), `doc`, `pprint`, `show`, media classes, `strategy` + all strategy classes, `reasoning`, `return_result`. `help` is shadowed to `doc` so nothing blocks on stdin.
 - **REPL state persists** across cells (globals-declared wrapper); helper functions defined in cells persist as REPL locals — they are never attached to the agent, and attaching callables to `self` is validator-rejected. Return-type names are re-injected if the model clobbers them. `Out[n]` gives Jupyter-style access to prior cell values.
-- **Media**: `show(obj)` attaches images/files to the cell's output, capped by `truncation.media_capture.max_attachments_per_execution` (default 5, **per cell**).
+- **Media**: `show(obj)` attaches images, audio, video, PDFs, PIL images, or matplotlib figures while a cell runs. The normal runtime keeps the first 5 attachments per cell; adjust `truncation.media_capture.max_attachments_per_execution`. Configure the model's `media_inputs` with accepted formats. See [nooa-media](../nooa-media/SKILL.md) for examples and size limits.
 - **Custom error formatting**: `CodeActStrategy(config=..., error_formatter=obj)` where `obj.format(error, code=None, *, line_offset=0) -> str`. Default is the IPython-style formatter (cell/line references, framework frames filtered, signature hint on call-shape TypeErrors).
 
 ## Truncation tuning (`TruncationConfig`)
