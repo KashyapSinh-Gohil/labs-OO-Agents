@@ -4,8 +4,10 @@
 runs a few small test requests, and saves a named entry (an *alias*) in
 `llm_config.yaml`. Your agents then use the model by that alias.
 
-Test requests can cost money. Connect asks once, before the first one. To set
-up a model without any requests, see [Configure a model without paid
+Test requests can cost money. The interactive wizard asks before its first
+test request. Agent-driven stages run without a spending prompt; authorize
+those calls before invoking them. `--yes` approves wizard checks and saving.
+To set up a model without any requests, see [Configure a model without paid
 checks](model-configuration.md).
 
 ## CLI
@@ -20,7 +22,8 @@ It asks for a provider (NVIDIA, NVIDIA Inference Hub, OpenAI, Anthropic,
 Google, OpenRouter, or a custom endpoint), your API key, and the model. It then tests the model and asks
 before saving.
 
-To skip the questions, pass the answers as flags:
+To prefill the connection details, pass the answers as flags. The wizard still
+asks about checks, optional settings, and saving unless you use `--yes`:
 
 ```sh
 uv run nooa connect your-model --as my-model \
@@ -36,8 +39,9 @@ uv run nooa connect your-model --as my-model \
   tries all three.
 - `--api-key-env` is the name of the environment variable that holds the key,
   never the key itself. Use `--api-key-env ''` for a local server with no key.
-- `--prompt-key` lets you paste a key instead. At the end Connect offers to save
-  it in NOOA's `secrets.yaml`.
+- `--prompt-key` lets you paste a masked key instead (even with `--yes`). At the
+  end Connect offers to save it in NOOA's `secrets.yaml`; persisting a key
+  requires separate approval, not just `--yes`.
 - `--yes` approves the test requests and saving without asking. It needs
   `MODEL`, `--as`, and either `--provider` or `--endpoint` plus `--api-style`.
 
@@ -84,7 +88,9 @@ because decision endpoints do not list their models.
 
 With the default `--probe all`, Connect runs:
 
-1. **Connection.** One request per API style, to find which one works.
+1. **Interface selection**, if no API style is specified. Tests the candidate
+   API styles to find which one works. An explicit `--api-style` skips this
+   comparison in the wizard.
 2. **Text baseline.** Asks the model for `17 * 19` as a typed NOOA result. The
    model must return `323` as structured output. Without this pass, the
    wizard does not save.
@@ -95,8 +101,12 @@ With the default `--probe all`, Connect runs:
    over between turns.
 6. **Media**, only if you choose to. See [below](#choose-media-inputs-during-setup).
 
-`--probe minimal` runs only the connection check. `--no-probe` (or
-`--probe none`) sends no test requests and saves the entry as **unverified**.
+`--probe minimal` still runs the configured typed text baseline, but skips
+tools, reasoning-level, session, and media checks. Interface selection can
+precede it if you did not supply an API style. `--no-probe` (or `--probe none`)
+sends no generation requests and saves the entry as **unverified**; discovery
+and catalogue metadata may still be fetched. For no-network wizard setup,
+supply the exact model, endpoint, and API style plus `--no-probe --no-catalogue`.
 
 Only a failed connection or text baseline blocks saving. Tool, reasoning,
 caching, or media results that need attention do not.
@@ -141,8 +151,10 @@ public model list. Use `--catalogue-model ID` to pick the entry, or
 
 ## Independent stages for agents
 
-`--stage NAME` runs one step without prompts and prints one JSON report to
-stdout. Only `save` writes a file.
+`--stage NAME` runs one step and prints one JSON report to stdout. It does not
+ask for spending approval; obtain permission before paid stages. Only `save`
+writes the registry. Stages normally do not prompt, but `--prompt-key` asks for
+a masked credential on endpoint checks; use `--api-key-env` for unattended use.
 
 | Stage | What it does |
 |---|---|
@@ -165,6 +177,8 @@ uv run nooa connect your-model --stage routing --as work \
   --endpoint https://gateway.example/v1 --api-style chat \
   --api-key-env MODEL_KEY > result.json
 uv run nooa connect --stage save --input result.json --output llm_config.yaml
+# Register this explicit output path for the application:
+export NEMO_OO_LLM_CONFIG="$PWD/llm_config.yaml"
 ```
 
 - Pass `--endpoint`, `--api-style`, and `--api-key-env` explicitly.
@@ -201,16 +215,26 @@ Add `--show-diagnostics` in the wizard to see full details.
 - A key saved in `secrets.yaml` is overridden by an exported environment
   variable with the same name.
 - To edit a saved model, run `uv run nooa connect --edit-model NAME`. Omit NAME
-  to pick from a list.
-- When you reconnect, unchanged tests that already passed are reused.
+  to pick from a list. Without an explicit output target, editing writes to the
+  effective alias's defining file when it is not a bundled default.
+- `--output` only selects a write destination; it does not register that file
+  for your application. Use `NEMO_OO_LLM_CONFIG` or explicitly load it with
+  `reload_registry(Path(...))`. `-w` selects the project write target, not the
+  generic Python runtime's discovery root.
+- Reconnecting to a saved alias normally runs fresh checks: the registry writer
+  does not persist probe evidence, and editing resets it. Reuse requires retained
+  session or explicitly supplied probe evidence and matching request settings;
+  do not count on reconnecting to avoid charges. Keep sanitized diagnostic
+  reports separately if you need verification evidence later.
 - To load a config file from another path, add it to `NEMO_OO_LLM_CONFIG`.
 
 ## Choose media inputs during setup
 
 A model receives images, audio, video, or PDFs only if its entry lists them in
 `media_inputs`. New entries are text-only (`media_inputs: []`). Connect never
-guesses this from the model name or published details. See
-[media inputs](model-configuration.md#explicit-media-inputs-migration).
+guesses this from the model name or published details. See the
+[media API guide](media.md) for typed parameters, constructors, CodeAct `show()`,
+URL/MIME limits, and [migration](model-configuration.md#explicit-media-inputs-migration).
 
 In the wizard, choose one:
 
@@ -251,13 +275,15 @@ uv run nooa connect your-model --stage media --endpoint https://gateway.example/
   --api-style chat --api-key-env MODEL_KEY --test-media-inputs image,pdf \
   > result.json
 uv run nooa connect --stage save --input result.json --output llm_config.yaml
+# Register this explicit output path for the application:
+export NEMO_OO_LLM_CONFIG="$PWD/llm_config.yaml"
 ```
 
 Rules:
 
 - `--media-inputs ''` or `-` means text-only.
 - `--test-media-inputs` cannot be combined with `--media-inputs`, `--no-probe`,
-  or `--probe minimal`.
+  or `--probe minimal` / `--probe none`.
 - In stage mode, `--test-media-inputs` works only with `plan`, `media`, and `all`.
 
 ## Library calls from NOOA agents

@@ -149,6 +149,18 @@ self.context["plan"] = Context(plan.format(), prefix=True)
 self.context["project_state"] = Context(expr="self.format_project_state()")
 ```
 
+### Model onboarding and media
+
+- Recommend `uv add "nooa[cli]"` then `uv run nooa connect` for model setup;
+  use saved aliases in agent code. Get permission before inference checks,
+  especially noninteractive stages. Offline setup and diagnostics belong in
+  `skills/nooa-model-configuration/SKILL.md` and `docs/model-connect.md`.
+- Use typed `Image`, `Audio`, `Video`, and PDF `File` parameters, or `show()`
+  inside captured CodeAct cells. Explicit route-local `media_inputs` is required;
+  absent/empty lists are text-only and outgoing media becomes a removal notice.
+  Do not infer support from names or treat File as arbitrary document upload.
+  See `docs/media.md` and `skills/nooa-media/SKILL.md` for the current API.
+
 ### Tracing
 
 Tracing is automatic when the dev viewer is running (`nooa start-dev`, port 5001). To write JSONL files instead:

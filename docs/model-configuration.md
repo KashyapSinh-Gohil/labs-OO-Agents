@@ -4,6 +4,9 @@ You can add a model to NOOA by editing `llm_config.yaml` yourself. This sends no
 requests to the model. An agent can do it for you with the
 [nooa-model-configuration](../skills/nooa-model-configuration/SKILL.md) skill.
 
+For guided onboarding and approved connection tests, prefer
+[nooa connect](model-connect.md). This page is the offline alternative.
+
 Get the exact model ID, API format, and limits from the endpoint's
 documentation. Leave out anything you do not know.
 
@@ -93,9 +96,33 @@ print("Model configuration loaded; endpoint and credentials have not been tested
 This does not test the key or the endpoint. The first real request will, and it
 may cost money.
 
-NOOA reads `llm_config.yaml` from its user configuration directory. To use
-another file, add its path to `NEMO_OO_LLM_CONFIG`. Later files override aliases
-from earlier ones; `nooa.llm_config.llm_config_chain()` lists the files in use.
+## Configuration discovery and precedence
+
+Automatic discovery reads existing files in this order (later aliases win):
+
+1. Bundled defaults from installed packages.
+2. User configuration: normally `~/.config/nooa/llm_config.yaml`; honors
+   `XDG_CONFIG_HOME` or the explicit `NEMO_OO_USER_DIR` directory override.
+3. Project configuration: normally `<project-root>/.nooa/llm_config.yaml`;
+   `NEMO_OO_PROJECT_DIR` overrides the directory containing this file.
+4. Comma-separated paths in `NEMO_OO_LLM_CONFIG`, in the order supplied.
+
+A later definition replaces the **whole alias entry**, not selected fields.
+Use `nooa.llm_config.llm_config_chain()` to inspect the paths in your runtime.
+In a source checkout, project-root detection starts from NOOA's source file,
+not your process's working directory; it falls back to cwd when no source
+ancestor has `pyproject.toml`. Do not assume an arbitrary cwd file is loaded.
+
+For the standalone file above, either explicitly reload it in each application
+as shown, or make it discoverable before launching the application:
+
+```sh
+export NEMO_OO_LLM_CONFIG="$PWD/llm_config.yaml"
+```
+
+`reload_registry(Path(...))` loads only the supplied file(s); call
+`reload_registry()` without arguments to return to automatic discovery.
+Connect's `--output FILE` chooses where to write, not what Python will load.
 
 ## Use Connect without generation calls
 
@@ -106,8 +133,7 @@ details:
 ```sh
 uv run nooa connect your-model --as my-model \
   --endpoint https://gateway.example/v1 --api-style chat \
-  --api-key-env MY_MODEL_KEY --no-probe --no-catalogue \
-  --output llm_config.yaml
+  --api-key-env MY_MODEL_KEY --no-probe --no-catalogue
 ```
 
 For a decision model:
@@ -116,11 +142,13 @@ For a decision model:
 uv run nooa connect typesafe/jev-1.13 --as decisions \
   --endpoint https://openrouter.ai/api/alpha/decisions \
   --api-style systemone --api-key-env OPENROUTER_API_KEY \
-  --no-probe --no-catalogue --output llm_config.yaml
+  --no-probe --no-catalogue
 ```
 
-The entry is saved as **unverified**. Connect still asks before saving (skip with
-`--yes`). See [Connect](model-connect.md) to test the model later.
+These examples use the default user configuration destination. Supplying the
+exact model, endpoint, and API style avoids model discovery; `--no-catalogue`
+avoids metadata lookup. The entry is saved as **unverified**. Connect still asks
+before saving (skip with `--yes`). See [Connect](model-connect.md) to test the model later.
 
 To ask an agent: "Use the `nooa-model-configuration` skill to configure this
 model without API calls. Keep my other entries, use an environment variable for
@@ -171,14 +199,17 @@ responses = ResponsesClient("openai/your-model", media_inputs=["image", "pdf"])
 
 ### What happens to media the model cannot receive
 
-`show()` in agent code always works. If the model is not set up for that kind of
-media, the next request replaces it with a short note, for example:
+Typed `Media` parameters or `show()` inside captured CodeAct cells can attach
+media even on a text-only route. `show()` outside a collector does not attach
+anything. For recognized public attachments the next request replaces disabled
+media with a short note, for example:
 
 - `[An image was removed here because this model is not set up to receive images.]`
 - `[A file was removed here. Only PDF files can be sent to a model.]`
 
-Stored history is not changed. If you switch to a model that accepts the media,
-it is sent again.
+Stored portable history is not changed. Replaying it through a permitted route
+can send the original media again. Opaque native assistant state has additional
+replay constraints; see the [media guide](media.md#text-only-requests-and-replay).
 
 To let a model receive it, add the kind to its entry, for example
 `media_inputs: [video]`, and keep any kinds already listed.

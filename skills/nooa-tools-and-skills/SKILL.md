@@ -133,7 +133,17 @@ img = Image.from_file("photo.png")     # also .from_bytes(media_type=...), .from
 await MediaAgent().describe(img)
 ```
 
-Only works with multimodal-capable models — text-only models error when handed media. See `examples/quickstart/13_multimodal.py`.
+Configure the route's `media_inputs` explicitly (e.g. `[image, pdf]`) before
+expecting perception. Missing/empty declarations are text-only: outgoing
+attachments are replaced with removal notices, not automatically sent or
+interpreted. A declared kind still requires actual endpoint support.
+
+Default CodeAct prefill shows direct Media parameters; Predict attaches them
+directly. Generated CodeAct can call `show(obj)` for media created during a
+cell; outside capture it only prints a not-captured notice. `File` is PDF-only
+with exact PDF MIME, not arbitrary document upload. Use
+[nooa-media](../nooa-media/SKILL.md) for the current constructors, URL/MIME
+caveats, attachment limits, replay behavior, and checked examples.
 
 ## Pitfalls
 

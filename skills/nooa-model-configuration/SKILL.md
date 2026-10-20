@@ -46,7 +46,7 @@ permission to make model calls.
 
 **Agent CLI:** stage mode produces JSON and never saves implicitly.
 `plan` and `save` are offline; `discover` and `catalogue` fetch metadata;
-`interfaces`, `routing`, `tools`, `reasoning`, `session`, and `all` can
+`interfaces`, `routing`, `tools`, `reasoning`, `media`, `session`, and `all` can
 incur inference charges. Stage mode does not ask for spending approval: obtain
 the user's allowance before invoking a paid stage, set explicit token caps and
 budget, inspect the planned timeouts, and stop on exhaustion. Failed calls consume
@@ -61,6 +61,8 @@ uv run nooa connect your-model --stage plan --as work \
 
 # Only when the user has approved this write:
 uv run nooa connect --stage save --input model-plan.json --output llm_config.yaml
+# Make this explicit output discoverable to the application:
+export NEMO_OO_LLM_CONFIG="$PWD/llm_config.yaml"
 ```
 
 Use `--yes` only when replacement is authorized; it is not a substitute for
@@ -104,6 +106,28 @@ probes and call that validation of a NOOA entry.
   not a test-only cache override. Other Chat routes may cache implicitly;
   Responses and recognized Anthropic routes have explicit marker mappings.
   `cache_breakpoint: null` opts out of NOOA markers, not provider implicit caching.
+
+## Configure media explicitly
+
+Use [nooa-media](../nooa-media/SKILL.md) for attachment authoring. Each route
+is text-only unless its entry explicitly declares `media_inputs` containing
+only supported/authorized kinds: `image`, `audio`, `video`, `pdf`. `File` is
+PDF-only with PDF MIME; there is no arbitrary `file` permission. Preserve the
+same route's declared kinds when editing, but do not transfer permission to
+an unrelated route or infer it from model names/catalogues.
+
+`--media-inputs image,pdf` is a manual, unverified declaration;
+`--media-inputs ''` or `-` is text-only. For no-network wizard setup, also
+supply the exact model, endpoint and API style, `--no-probe --no-catalogue`.
+With separate spending/sample-transmission approval, `--stage media` plus
+`--test-media-inputs image,pdf` tests the text baseline and generated samples.
+Audio/video checks are currently Chat-only; skipped checks are not evidence
+of rejection. `plan` can describe these tests without executing them.
+
+Disabled outgoing media is replaced with plain removal notices; capture
+success is not perception. Generated-sample acceptance is not proof of
+understanding arbitrary content. State manual, passed, skipped and unverified
+results separately and keep all writes and additional calls authorized.
 
 ## Interpret failures and evidence separately
 
