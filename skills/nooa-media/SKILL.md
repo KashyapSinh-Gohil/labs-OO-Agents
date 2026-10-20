@@ -6,7 +6,9 @@ compatibility: nooa package
 
 # Work with NOOA media
 
-See [the media guide](../../docs/media.md) for an image example and [Connect](../../docs/model-connect.md) for setup.
+See [the media guide](../../docs/media.md), the
+[image quickstart](../../examples/quickstart/13_multimodal.py), and
+[Connect](../../docs/model-connect.md) for setup.
 
 ## Check setup and authorization
 

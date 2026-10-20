@@ -25,85 +25,38 @@ models:
 Replace placeholders with your provider's settings; keep the key in `MODEL_KEY`.
 See [model configuration](model-configuration.md) and [Connect](model-connect.md).
 
-## Complete image example
+## Run an image example
 
-Save the YAML above as `llm_config.yaml` and this script as `inspect_image.py`
-in the same directory. Put a real PNG at `photo.png`; this checkout includes
-`examples/assets/test_image.png`. Export `MODEL_KEY` securely. Run
-`uv run python inspect_image.py` only with approval to send the image and make
-billable model calls. Predict may retry if the response fails validation.
+The [multimodal quickstart](../examples/quickstart/13_multimodal.py) shows
+CodeAct describing an image and Predict returning structured image analysis.
 
-```python
-import asyncio
-from pathlib import Path
+Configure an image-capable model with `nooa connect`, save it as `vision`,
+and enable `image`. From a source checkout, run:
 
-from pydantic import BaseModel
-
-from nooa import Agent, PredictStrategy, strategy
-from nooa.media import Image
-from nooa.unifiedllm import get_llm_client
-from nooa.unifiedllm.registry import reload_registry
-
-HERE = Path(__file__).resolve().parent
-reload_registry(HERE / "llm_config.yaml")
-vision = get_llm_client("vision")
-
-class ImageFacts(BaseModel):
-    description: str
-    visible_text: list[str]
-
-class Inspector(Agent, llm=vision):
-    @strategy(PredictStrategy())
-    async def extract(self, image: Image) -> ImageFacts:
-        """Describe the image and extract legible text. Leave uncertain text out."""
-        ...
-
-async def main() -> None:
-    try:
-        image = Image.from_file(HERE / "photo.png")
-        facts = await Inspector().extract(image)
-        print(facts.model_dump_json(indent=2))
-    finally:
-        await vision.aclose()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+```sh
+uv run python examples/quickstart/13_multimodal.py --model vision
 ```
 
-Predict suits extraction and classification: it attaches direct typed media
-arguments and validates the return value. Import types at module level.
-Leave `{image}` out of docstrings: arguments are already shown to the model.
-For media in lists/dicts, use direct parameters or show each item in CodeAct.
+This sends the bundled sample images to your provider and can cost money.
+For a custom configuration file, add `--config /path/to/llm_config.yaml`.
 
 ## CodeAct and `show()`
 
-Default CodeAct suits tasks that need Python or tools. Its input inspection
-shows direct media parameters, prints other arguments, and keeps them as Python
-variables. If you disable it with `CodeActConfig(prefill=None)` or replace it,
-show media yourself.
+Predict and default CodeAct attach media passed directly as method arguments.
+In generated CodeAct code, call `show()` for media created by code or tools:
 
-In generated CodeAct, builtin `show(image)` attaches media from the cell for the
-next model turn. Helpers import it explicitly. After the setup above, define:
-
-```python
-from nooa.runtime.media_capture import show
-
-class Gallery(Agent, llm=vision):
-    def show_photo(self, path: str) -> None:
-        """Show a local photo while a CodeAct cell is running."""
-        show(Image.from_file(path))
-
-    async def compare(self, paths: list[str]) -> str:
-        """Call self.show_photo for each path, then compare the photos."""
-        ...
+```text
+show(obj: Any) -> None
 ```
 
-Call helpers from generated CodeAct cells. Outside a cell, `show()` prints a
-not-captured notice. Show individual objects, not path strings or lists.
-Use `show()` while generated code is running so the next model turn receives
-the attachment. Printing the object displays its name and metadata.
-`show()` also accepts PIL images and matplotlib figures, converting them to PNG;
-install those optional libraries with `uv add pillow matplotlib` if needed.
+`obj` can be an `Image`, `Audio`, `Video`, PDF `File`, PIL image, or matplotlib
+figure. `show()` attaches it for the next model turn. Show individual objects;
+for a list, loop over its items.
+
+Generated code can call `show()` without an import. Hand-written helpers use
+`from nooa.runtime.media_capture import show` and run inside a CodeAct cell.
+Outside execution, `show()` prints a not-captured notice. If you replace or
+disable CodeAct's input inspection, show the media arguments yourself.
 
 ## Create media values
 
@@ -181,7 +134,8 @@ uv run nooa connect your-model --stage plan --as vision \
 ```
 
 Save separately with `--stage save --input media-plan.json --output llm_config.yaml`.
-Load that file explicitly as above. In the wizard, use explicit model/endpoint/API
+Load it with `reload_registry(Path("llm_config.yaml"))` or set
+`NEMO_OO_LLM_CONFIG` to its absolute path. In the wizard, use explicit model/endpoint/API
 style with `--media-inputs image,pdf --no-probe --no-catalogue` to stay offline;
 `--no-probe` alone can still fetch catalogue metadata.
 
@@ -201,15 +155,5 @@ for text-only models to silence the missing-list warning.
 
 Pass a configured client with `llm=`. Its media settings apply to that call:
 
-```python
-vision = get_llm_client("vision")  # Configured with media_inputs: [image]
-facts = await agent.extract(image, llm=vision)
-```
-
-Keep a separate alias for each model and endpoint. Changing the destination
-inside a low-level call, such as `existing_client.acall(messages, model=...)`,
-makes that request text-only. Use `llm=vision` on the agent method instead.
-
-To change a client's formats without editing its saved entry, use
-`get_llm_client("vision", media_inputs=["image", "pdf"])`.
-Set `media_inputs` when configuring or constructing the client.
+Use `vision = get_llm_client("vision")` for an alias configured with image input,
+then `await agent.method(image, llm=vision)` in your async application.
