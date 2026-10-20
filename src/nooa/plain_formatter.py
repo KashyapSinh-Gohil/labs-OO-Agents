@@ -61,7 +61,9 @@ class PlainBlockFormatter(XMLBlockFormatter):  # type: ignore[misc]
         """
         # Canonical assistant text must remain unchanged so the shared replay
         # path can retain native reasoning and exact tool-call data.
-        if _is_llm_response(event) or event.event_role is Role.ASSISTANT:
+        if _is_llm_response(event) or (
+            event.event_role is Role.ASSISTANT and isinstance(getattr(event, "content", None), str)
+        ):
             return super().format_event(event, event_format=event_format)
 
         fc_kwargs = event_format.model_dump() if event_format is not None else {}
