@@ -35,3 +35,33 @@ def test_quiet_block_restores_state_after_an_error(capsys):
         pass
     tracing._print_trace_target([_Exporter()], None)
     assert "OTel tracing enabled" in capsys.readouterr().out
+
+
+def test_quiet_blocks_in_other_threads_do_not_leak(capsys):
+    """Overlapping quiet blocks in two threads: each restores only its own state."""
+    import threading
+
+    first_in, second_in, first_out = threading.Event(), threading.Event(), threading.Event()
+    printed = {}
+
+    def first():
+        with tracing.quiet_trace_target():
+            first_in.set()
+            second_in.wait(5)
+        first_out.set()  # leaves while the second thread is still quiet
+
+    def second():
+        first_in.wait(5)
+        with tracing.quiet_trace_target():
+            second_in.set()
+            first_out.wait(5)
+            printed["inside"] = tracing._announce_target.get()
+
+    threads = [threading.Thread(target=first), threading.Thread(target=second)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    assert printed["inside"] is False  # still quiet after the first thread left
+    tracing._print_trace_target([_Exporter()], None)  # this context was never quiet
+    assert "OTel tracing enabled" in capsys.readouterr().out

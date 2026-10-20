@@ -24,6 +24,7 @@ Usage::
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import logging
 import os
 import sys
@@ -67,7 +68,10 @@ logger = logging.getLogger(__name__)
 _enabled: bool = False
 _provider: TracerProvider | None = None
 _hooks: OpenInferenceHooks | None = None  # retained so we can re-register per-Task
-_announce_target: bool = True  # see quiet_trace_target()
+# Per execution context (thread / asyncio task), see quiet_trace_target().
+_announce_target: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "nooa_tracing_announce_target", default=True
+)
 
 
 class _IsolatedIdGenerator(RandomIdGenerator):
@@ -548,18 +552,16 @@ def quiet_trace_target() -> Iterator[None]:
     full-screen or step-by-step terminal output (e.g. ``nooa connect``) where
     that line would land in the middle of the display.
     """
-    global _announce_target
-    previous = _announce_target
-    _announce_target = False
+    token = _announce_target.set(False)
     try:
         yield
     finally:
-        _announce_target = previous
+        _announce_target.reset(token)
 
 
 def _print_trace_target(exporters: list[SpanExporter], experiment: str | None) -> None:
     """Print where traces are being sent (unless inside ``quiet_trace_target``)."""
-    if not _announce_target:
+    if not _announce_target.get():
         return
     session_id = get_session()
     descriptions: list[str] = []
