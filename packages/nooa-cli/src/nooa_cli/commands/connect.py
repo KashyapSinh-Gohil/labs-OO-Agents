@@ -83,11 +83,11 @@ from ._connect_stages import STAGES
 @click.option(
     "--output-tokens",
     type=click.IntRange(1, 4096),
-    default=None,
-    help=(
-        "Cap for interface discovery only, before the saved reply budget is chosen "
-        "[default: nooa.unifiedllm.connect.DISCOVERY_OUTPUT_TOKENS]."
-    ),
+    # Same value as nooa.unifiedllm.connect.DISCOVERY_OUTPUT_TOKENS, written out so
+    # the CLI need not import nooa.unifiedllm at load; a test keeps them equal.
+    default=2048,
+    show_default=True,
+    help="Cap for interface discovery only, before the saved reply budget is chosen.",
 )
 @click.option(
     "--reasoning-output-tokens",
@@ -228,10 +228,6 @@ def command(
         if not resolved_dir.is_dir():
             raise click.UsageError(f"--working-dir path {str(resolved_dir)!r} is not a directory.")
         output = str(resolved_dir / paths.DIR_NAME / "llm_config.yaml")
-    if output_tokens is None:
-        from nooa.unifiedllm.connect import DISCOVERY_OUTPUT_TOKENS
-
-        output_tokens = DISCOVERY_OUTPUT_TOKENS
     from nooa.tracing import quiet_trace_target
 
     # Checks create model clients, which may auto-enable tracing; its

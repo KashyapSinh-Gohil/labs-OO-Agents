@@ -1644,3 +1644,15 @@ def test_connect_does_not_print_the_otel_tracing_line(tmp_path, monkeypatch, cap
     capsys.readouterr()
     nooa.tracing._print_trace_target([Exporter()], None)
     assert "OTel tracing enabled: journal:http://viewer.test:5001" in capsys.readouterr().out
+
+
+def test_cli_and_diagnostic_defaults_match_the_discovery_constant():
+    """The CLI writes the value out (no nooa.unifiedllm import at load); keep it equal."""
+    import inspect
+
+    from nooa_cli.commands._connect_registry import diagnostic_context
+
+    option = next(p for p in command.params if p.name == "output_tokens")
+    assert option.default == DISCOVERY_OUTPUT_TOKENS
+    default = inspect.signature(diagnostic_context).parameters["output_tokens"].default
+    assert default == DISCOVERY_OUTPUT_TOKENS

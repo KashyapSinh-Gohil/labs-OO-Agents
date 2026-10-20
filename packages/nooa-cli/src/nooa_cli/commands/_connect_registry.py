@@ -105,7 +105,7 @@ def diagnostic_context(
     api_key=None,
     budget=None,
     remaining=None,
-    output_tokens=None,
+    output_tokens=2048,  # == nooa.unifiedllm.connect.DISCOVERY_OUTPUT_TOKENS (tested)
     reasoning_output_tokens=4096,
     stage=None,
     discovery_succeeded=None,
@@ -120,15 +120,9 @@ def diagnostic_context(
 
     from nooa._version import __version__
     from nooa.llm_config import llm_config_chain
-    from nooa.unifiedllm.connect import (
-        DECISION_API_STYLES,
-        DISCOVERY_OUTPUT_TOKENS,
-        normalize_endpoint,
-    )
+    from nooa.unifiedllm.connect import DECISION_API_STYLES, normalize_endpoint
     from nooa.unifiedllm.connect._diagnostics import installation_context
 
-    if output_tokens is None:
-        output_tokens = DISCOVERY_OUTPUT_TOKENS
     context = {
         **installation_context(),
         "target_file": str(Path(target).expanduser().resolve()) if target else None,
