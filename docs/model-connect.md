@@ -101,11 +101,12 @@ With the default `--probe all`, Connect runs:
    over between turns.
 6. **Media**, only if you choose to. See [below](#choose-media-inputs-during-setup).
 
-`--probe minimal` still runs the configured typed text baseline, but skips
-tools, reasoning-level, session, and media checks. Interface selection can
-precede it if you did not supply an API style. `--no-probe` (or `--probe none`)
-sends no generation requests and saves the entry as **unverified**; discovery
-and catalogue metadata may still be fetched. For no-network wizard setup,
+`--probe minimal` runs the typed arithmetic check using your settings. It skips
+tools, reasoning, conversation, and media checks. Connect may first try the API
+styles if you did not choose one.
+
+`--no-probe` (or `--probe none`) skips model requests and saves an **unverified**
+entry. It can still fetch model lists and catalogue details. To stay offline,
 supply the exact model, endpoint, and API style plus `--no-probe --no-catalogue`.
 
 Only a failed connection or text baseline blocks saving. Tool, reasoning,
@@ -215,34 +216,28 @@ Add `--show-diagnostics` in the wizard to see full details.
 - A key saved in `secrets.yaml` is overridden by an exported environment
   variable with the same name.
 - To edit a saved model, run `uv run nooa connect --edit-model NAME`. Omit NAME
-  to pick from a list. Without an explicit output target, editing writes to the
-  effective alias's defining file when it is not a bundled default.
-- `--output` only selects a write destination; it does not register that file
-  for your application. Use `NEMO_OO_LLM_CONFIG` or explicitly load it with
-  `reload_registry(Path(...))`. `-w` selects the project write target, not the
-  generic Python runtime's discovery root.
-- Reconnecting to a saved alias normally runs fresh checks: the registry writer
-  does not persist probe evidence, and editing resets it. Reuse requires retained
-  session or explicitly supplied probe evidence and matching request settings;
-  do not count on reconnecting to avoid charges. Keep sanitized diagnostic
-  reports separately if you need verification evidence later.
+  to pick from a list. Edits normally go back into the file that defines the
+  model. Use `--output FILE` to choose another file.
+- After saving to a custom file, set `NEMO_OO_LLM_CONFIG` to its path or load it
+  with `reload_registry(Path(...))`. `-w DIR` saves to `DIR/.nooa/llm_config.yaml`.
+- Editing a saved model runs fresh checks, which may cost money. Keep diagnostic
+  reports separately if you need a record of earlier results.
 - To load a config file from another path, add it to `NEMO_OO_LLM_CONFIG`.
 
 ## Choose media inputs during setup
 
 A model receives images, audio, video, or PDFs only if its entry lists them in
-`media_inputs`. New entries are text-only (`media_inputs: []`). Connect never
-guesses this from the model name or published details. See the
-[media API guide](media.md) for typed parameters, constructors, CodeAct `show()`,
-URL/MIME limits, and [migration](model-configuration.md#explicit-media-inputs-migration).
+`media_inputs`. NOOA assumes new entries are text-only (`media_inputs: []`)
+until you choose formats. See the [media guide](media.md) for examples and
+[migration](model-configuration.md#explicit-media-inputs-migration).
 
 In the wizard, choose one:
 
 - **Test all media inputs (generated samples).** Connect sends one small
   generated sample per format to check that this model accepts it through this
   connection. Formats that pass are enabled for this model entry. This uses the
-  budget you already approved. It does not check how well the model understands
-  the media.
+  budget you already approved. Check the model's answers on your own examples
+  before relying on it.
 - **Choose media inputs manually.** No requests. The choice is saved as
   unverified.
 
@@ -253,7 +248,7 @@ Test limits:
 
 - Image and PDF are tested on all three API styles.
 - Audio and video are tested only with `--api-style chat`. On other styles they
-  are skipped, not proven unsupported.
+  are skipped.
 - **Not available** means the check did not show that this model accepts that
   format through this connection.
 

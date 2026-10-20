@@ -1,18 +1,15 @@
 # Media inputs: images, audio, video, and PDFs
 
-NOOA separates **creating media**, **attaching it to a task or execution
-output**, and **allowing it on the outgoing model route**. Import the typed
-values from `nooa` or `nooa.media`: `Image`, `Audio`, `Video`, and `File`.
-These are provider-independent containers, not proof that an endpoint can
-understand their contents.
+Import `Image`, `Audio`, `Video`, and PDF `File` from `nooa.media` and pass them
+as agent method arguments. For media created while CodeAct runs, use `show()`.
 
-## Declare permission on the route
+## Configure the model
 
-Models are **text-only by default**. Set `media_inputs` on the registry entry
-or client constructor, explicitly listing any of `image`, `audio`, `video`,
-and `pdf`. Missing, null, and empty declarations all mean text-only. A list
-(or a tuple in Python) is accepted; unknown values, duplicates, and a bare
-string such as `"image"` are rejected. There is no `file` permission.
+NOOA assumes models are text-only until configured. Set `media_inputs` in the
+model's registry entry or client constructor. Supported values are `image`,
+`audio`, `video`, and `pdf`. Omitted, null, or empty lists mean text-only.
+Use a list (or a tuple in Python); bare strings, duplicates, and unknown values
+are rejected. If you enable a format the provider does not accept, requests may fail.
 
 ```yaml
 models:
@@ -25,52 +22,16 @@ models:
     media_inputs: [image]
 ```
 
-Replace the model and endpoint with your actual route and keep credentials in
-the named environment variable. This configuration is an **unverified
-permission**, not capability inference. NOOA does not enable media from a model
-name, catalogue entry, provider family, or successful text call. The endpoint,
-API style, transport, codecs, and request format must also support it.
+Replace placeholders with your provider's settings; keep the key in `MODEL_KEY`.
+See [model configuration](model-configuration.md) and [Connect](model-connect.md).
 
-For construction without a registry alias:
+## Complete image example
 
-```python
-from nooa.unifiedllm import CompletionClient, ResponsesClient
-
-async def build_clients() -> None:
-    chat = CompletionClient("openai/your-model", media_inputs=["image", "pdf"])
-    responses = ResponsesClient("openai/your-model", media_inputs=["image"])
-    try:
-        # Creating clients sends no inference requests.
-        print(chat.media_inputs, responses.media_inputs)
-    finally:
-        await chat.aclose()
-        await responses.aclose()
-
-# From an async application: await build_clients().
-# aclose() releases sync and async resources; close() releases only sync ones.
-```
-
-`get_llm_client("vision", media_inputs=["image", "pdf"])` explicitly replaces
-that client's configured list; it does not append to it or save YAML. Permission
-is route-local: factory overrides of model, endpoint, provider, client type, or
-client clear inherited permission unless explicitly redeclared for the new
-client. Per-call model/endpoint/provider/client replacement uses text-only
-permission. An API-key-only change does not clear it. Prefer a separately
-configured client for each route. `media_inputs` is not a provider request
-parameter: passing it per call, inside `extra_body`, or in reasoning-level
-settings is invalid.
-
-See [manual model configuration](model-configuration.md) for registry discovery
-and [Connect](model-connect.md) for onboarding.
-
-## Complete image example with a registry alias
-
-Save the YAML above as `llm_config.yaml`, and this script as `inspect_image.py`
-in the same directory. Use a real PNG at `photo.png` (in this checkout you can
-copy `examples/assets/test_image.png`). Export `MODEL_KEY` securely. Run
-`uv run python inspect_image.py` **only with permission to send the image and
-make inference calls**; the two method calls below can incur charges. CodeAct
-may use multiple turns; Predict may retry validation.
+Save the YAML above as `llm_config.yaml` and this script as `inspect_image.py`
+in the same directory. Put a real PNG at `photo.png`; this checkout includes
+`examples/assets/test_image.png`. Export `MODEL_KEY` securely. Run
+`uv run python inspect_image.py` only with approval to send the image and make
+billable model calls. Predict may retry if the response fails validation.
 
 ```python
 import asyncio
@@ -78,308 +39,177 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from nooa import Agent, Image, PredictStrategy, strategy
+from nooa import Agent, PredictStrategy, strategy
+from nooa.media import Image
 from nooa.unifiedllm import get_llm_client
 from nooa.unifiedllm.registry import reload_registry
 
 HERE = Path(__file__).resolve().parent
-reload_registry(HERE / "llm_config.yaml")  # Explicit file, not assumed discovery.
-llm = get_llm_client("vision")
-
+reload_registry(HERE / "llm_config.yaml")
+vision = get_llm_client("vision")
 
 class ImageFacts(BaseModel):
     description: str
     visible_text: list[str]
 
-
-class Inspector(Agent, llm=llm):
-    # Default CodeAct: input prefill attaches the Image via show(image).
-    async def describe(self, image: Image) -> str:
-        """Describe the image in one or two sentences. Do not invent details."""
-        ...
-
-    # Predict: typed media is attached directly to the task, with no tool loop.
+class Inspector(Agent, llm=vision):
     @strategy(PredictStrategy())
     async def extract(self, image: Image) -> ImageFacts:
         """Describe the image and extract legible text. Leave uncertain text out."""
         ...
 
-
 async def main() -> None:
     try:
         image = Image.from_file(HERE / "photo.png")
-        agent = Inspector()
-        print(await agent.describe(image))
-        print((await agent.extract(image)).model_dump_json(indent=2))
+        facts = await Inspector().extract(image)
+        print(facts.model_dump_json(indent=2))
     finally:
-        await llm.aclose()
-
+        await vision.aclose()
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-Do not write `{image}` in the method docstrings: parameters are already
-provided, and string interpolation is not a binary attachment mechanism.
-Types used by generated code should be imported or defined at module level.
+Predict suits extraction and classification: it attaches direct typed media
+arguments and validates the return value. Import types at module level.
+Leave `{image}` out of docstrings: arguments are already shown to the model.
+For media in lists/dicts, use direct parameters or show each item in CodeAct.
 
-### Predict versus CodeAct inputs
+## CodeAct and `show()`
 
-- **PredictStrategy** attaches direct `Media` values in the effective bound
-  parameters to its Task event. A positional input is not attached twice through
-  its mirrored keyword binding. This is per-parameter collection, not content
-  deduplication: distinct parameters holding the same object can attach it twice.
-  Predict does not recursively walk lists/dicts or auto-convert PIL images and
-  matplotlib figures. Use explicit typed parameters for extraction/classification.
-- **Default CodeAct (also CodeActV2)** runs `InspectInputsPrefill`, which calls
-  `show()` for direct Media-valued parameters and prints other values. The
-  input objects are also live Python variables. Collection is shallow, not a
-  recursive container walk, and the prefill has the normal per-cell attachment
-  cap. `CodeActConfig(prefill=None)` disables this automatic inspection. With a
-  custom/disabled prefill or media created later, explicitly call `show()` in
-  generated code or a helper executing within the cell.
+Default CodeAct suits tasks that need Python or tools. Its input inspection
+shows direct media parameters, prints other arguments, and keeps them as Python
+variables. If you disable it with `CodeActConfig(prefill=None)` or replace it,
+show media yourself.
 
-## `show()` in generated code and helpers
-
-`show` is a builtin in generated CodeAct execution; no import is needed there.
-It attaches one supported object to the current cell's output, for a subsequent
-model request. It is not a general-purpose display function or URL downloader.
-`print`, `pprint`, `repr`, and returning a Media object do not attach its bytes.
-`show("photo.png")` and `show([image1, image2])` are unsupported; construct the
-object or loop over the individual objects instead.
-
-A hand-written helper imports `show` explicitly. For example, after the imports
-and `llm` setup above, a CodeAct agent can define:
+In generated CodeAct, builtin `show(image)` attaches media from the cell for the
+next model turn. Helpers import it explicitly. After the setup above, define:
 
 ```python
 from nooa.runtime.media_capture import show
 
-
-class Gallery(Agent, llm=llm):
+class Gallery(Agent, llm=vision):
     def show_photo(self, path: str) -> None:
-        """Attach a local photo during the current CodeAct cell."""
+        """Show a local photo while a CodeAct cell is running."""
         show(Image.from_file(path))
 
     async def compare(self, paths: list[str]) -> str:
-        """Call self.show_photo(path) for each path, then compare the photos."""
+        """Call self.show_photo for each path, then compare the photos."""
         ...
 ```
 
-When generated code calls `self.show_photo(path)`, the helper shares the active
-capture context. Calling the helper or `show(image)` from ordinary application
-code **outside** an execution collector only prints
-`[show() called outside execution context, not captured: ...]`. It does not
-attach the object to a future call. Do not rely on detached background tasks
-for capture. If `show()` is in the final cell that returns a result, there may
-be no next model turn to inspect it.
+Call helpers from generated CodeAct cells. Outside a cell, `show()` prints a
+not-captured notice. Show individual objects, not path strings or lists.
+Use `show()` while generated code is running so the next model turn receives
+the attachment. Printing the object displays its name and metadata.
+`show()` also accepts PIL images and matplotlib figures, converting them to PNG;
+install those optional libraries with `uv add pillow matplotlib` if needed.
 
-### Optional PIL and matplotlib objects
+## Create media values
 
-Inside a captured cell, `show()` also accepts `PIL.Image.Image` and
-`matplotlib.figure.Figure`, lazily converting them to PNG. Install the optional
-libraries with `uv add pillow matplotlib` if your application needs them;
-ordinary Media construction and permission filtering do not require them.
-Use `from PIL import Image as PILImage` to avoid shadowing NOOA's `Image`.
-For Predict, convert explicitly, for example save a PIL image into an
-`io.BytesIO` as PNG and use `Image.from_bytes(buf.getvalue(),
-media_type="image/png")`.
-
-## Factories and focused examples
-
-All four classes inherit `from_file(path, **vendor_metadata)` and
-`from_bytes(data, *, media_type, **vendor_metadata)`. Each also has
-`from_url(url, *, media_type=..., **vendor_metadata)`:
-
-| Class | URL default MIME | Required permission | Capture block |
-|---|---|---|---|
-| `Image` | `image/jpeg` | `image` | `image_url` |
-| `Audio` | `audio/wav` | `audio` | `input_audio` |
-| `Video` | `video/mp4` | `video` | `video_url` |
-| `File` | `application/pdf` | `pdf`, only for PDF MIME | `file` |
-
-These snippets only construct values; the local files must exist and contain
-valid media. Pass them as direct typed generation parameters or `show()` them
-inside a captured CodeAct cell, on a suitably declared route.
+All four types support `from_file(path)`, `from_bytes(data, *, media_type)`,
+and `from_url(url, *, media_type=...)`:
 
 ```python
 from pathlib import Path
-from nooa import Image, Audio, Video, File
+from nooa.media import Image, Audio, Video, File
 
-# Disk: reads all bytes now, guesses MIME from the filename extension.
 photo = Image.from_file("photo.png")
-clip = Audio.from_file("clip.wav")  # Inspect inferred MIME/format before sending.
+clip = Audio.from_bytes(Path("clip.wav").read_bytes(), media_type="audio/wav")
 movie = Video.from_file("clip.mp4")
-report = File.from_file("report.pdf")
-
-# Bytes: explicitly name the actual MIME; no codec/content validation.
-photo_bytes = Image.from_bytes(Path("photo.png").read_bytes(), media_type="image/png")
-clip_bytes = Audio.from_bytes(Path("clip.wav").read_bytes(), media_type="audio/wav")
-movie_bytes = Video.from_bytes(Path("clip.mp4").read_bytes(), media_type="video/mp4")
-report_bytes = File.from_bytes(Path("report.pdf").read_bytes(), media_type="application/pdf")
-
-# References only: these calls make no HTTP requests.
+report = File.from_bytes(Path("report.pdf").read_bytes(), media_type="application/pdf")
 photo_ref = Image.from_url("https://example.org/photo.png", media_type="image/png")
-movie_ref = Video.from_url("https://example.org/clip.mp4", media_type="video/mp4")
-report_ref = File.from_url("https://example.org/report.pdf", media_type="application/pdf")
-clip_ref = Audio.from_url("https://example.org/clip.wav", media_type="audio/wav")
 ```
 
-### URL, MIME, and transport caveats
+`from_file` reads the whole file and guesses MIME type from its extension, with
+`application/octet-stream` as the fallback. `from_bytes` requires a MIME type.
+These constructors do not check the content or codecs. WAV filenames can produce
+`audio/x-wav`; prefer bytes with explicit `audio/wav` for providers expecting WAV.
+URL default MIME types are `image/jpeg`, `audio/wav`, `video/mp4`, and
+`application/pdf`, respectively.
 
-- `from_url` stores the reference **without fetching or validating it**. For
-  image/video/PDF references, endpoint fetching and accepted URL formats depend
-  on the route. A public URL does not guarantee support; local paths and private
-  URLs are not automatically accessible to the endpoint. Treat sending URLs,
-  signed query strings, and media bytes as data disclosure requiring consent.
-- **Audio URLs are not automatically downloaded.** The current converter emits
-  `input_audio.data` from `_base64_data()`: a data URL gives base64, but a regular
-  URL is left as the URL string in that field. This is not an implemented
-  URL-to-audio fetch path and may be rejected. Prefer valid local WAV bytes/file
-  on a route whose input-audio format you have checked; fetch remote audio
-  explicitly in application code only with appropriate authorization and limits.
-- `from_file` uses `mimetypes.guess_type`, falling back to
-  `application/octet-stream`; it does not sniff the bytes. `from_bytes` requires
-  the keyword `media_type` but does not verify that it matches the payload.
-  URL defaults are labels, not detected MIME. Disk WAV inference can yield
-  `audio/x-wav`; the converter takes the MIME suffix literally, emitting
-  `input_audio.format="x-wav"` rather than normalizing it to `wav`. Prefer the
-  explicit `audio/wav` bytes example for a route checked with that format.
-  Constructors do not validate
-  codecs, PDF validity, resolution, duration, URL reachability, or provider limits.
-- The File attachment is PDF only when the collected MIME hints are exactly
-  `application/pdf` (case-normalized). A `.pdf` filename/URL or file ID alone is
-  not sufficient; missing, parameterized, or conflicting MIME hints do not pass
-  as PDF. `File.from_url` supplies a default PDF hint, not PDF verification.
-  **Non-PDF File attachments are replaced even with all four permissions.**
-  For text/CSV/Word/etc., read or deterministically extract text locally and pass
-  that text as a normal parameter. Do not relabel non-PDF bytes as PDF.
-- Provider hints are not portable guarantees. The current converter merges
-  `vendor_metadata` for Image (e.g. `detail="high"`) and Video, but not Audio or
-  File. File blocks use the filename `attachment`. Adapters own final wire
-  projection; enabling a kind does not ensure acceptance or perceptual accuracy.
-  Video audio-track comprehension is also provider-dependent.
+`from_url` stores a URL without fetching it. Image, video, and PDF URLs need
+provider support and must be accessible to the provider. **Audio URLs are not
+automatically downloaded** and may be rejected; prefer local WAV bytes. Fetch
+remote audio in application code only with authorization and size limits.
 
-### Size and attachment limits
+`File` supports PDFs only, with MIME type exactly `application/pdf`. Other file
+attachments are removed, even with every format enabled. Read or extract text
+locally from CSV, text, or Word files and pass it as a normal argument. Use the
+actual MIME type; do not label other content as PDF. Video and audio format
+support, including understanding a video's audio track, varies by provider.
 
-Factories read/encode the full payload. Base64 adds about 4:3 expansion; video
-can have additional frame-token costs. There is no constructor byte-size cap or
-universal provider limit here. Check your endpoint's byte, token, resolution,
-page, frame, duration, codec, and URL rules; resize, sample, split, or extract
-text before attaching. `size_bytes` is only an approximate inline payload size
-(and `None` for regular URLs), not a validation result. Text truncation is not
-binary media compression.
+## Size and attachment limits
 
-The normal actor runtime keeps at most **5 attachments per execution cell** by
-default, including prefill. Configure
-`TruncationConfig(media_capture=MediaCaptureConfig(max_attachments_per_execution=3))`
-from `nooa.config.truncation_config` via an Agent's `truncation=` setting if
-needed. The count must be positive. First N blocks are kept atomically; later
-calls print `[show() limit reached (N), attachment not added]`. Repeated shows
-are not deduplicated, and conversion happens before the count check, so this
-is not a memory/byte/token cap. Predict's direct task attachments do not use
-this per-cell cap. The sandbox `run_cell_source` currently uses a separate
-hardcoded cap of 100; do not assume the actor's default applies to every backend.
+Check your provider's byte, token, resolution, page, frame, duration, and codec
+limits. Resize images, sample video, split PDFs, or extract text before attaching.
+Constructors have no byte-size cap. Base64 adds about one third; video adds frame
+tokens. `size_bytes` is approximate (`None` for URLs). Text truncation leaves
+media bytes unchanged.
+
+Default CodeAct capture keeps the first **5 attachments per cell**, including
+input inspection. Later `show()` calls print a limit notice; repeated objects
+count again. Set `TruncationConfig(media_capture=MediaCaptureConfig(
+max_attachments_per_execution=3))` through the agent's `truncation=` setting to
+change this positive count; both classes are in `nooa.config.truncation_config`.
+Limit file sizes separately. Predict's direct arguments have no per-cell cap.
 
 ## Text-only requests and replay
 
-Capture can succeed even with `media_inputs: []`. When the next request is
-built, disabled public attachments in fresh inputs, history, assistant content,
-and tool outputs are replaced in place with plain text, preserving order:
+For formats missing from `media_inputs`, NOOA replaces attachments with text
+notices when sending the request, including attachments from earlier turns:
 
-- `[An image was removed here because this model is not set up to receive images.]`
-- `[An audio clip was removed here because this model is not set up to receive audio.]`
-- `[A video was removed here because this model is not set up to receive video.]`
-- `[A PDF was removed here because this model is not set up to receive PDF files.]`
-- `[A file was removed here. Only PDF files can be sent to a model.]`
+```text
+[An image was removed here because this model is not set up to receive images.]
+```
 
-Stored history and the Python Media objects are not changed. Replaying portable
-history through a suitably permitted route can send its original attachments
-again. The notice is neither a description nor OCR/transcription of the missing
-media; a text-only model cannot recover its contents from it.
+The notices contain no description or transcription. Stored history and Python
+media objects stay unchanged. Reusing that history with a model configured for
+the formats can send the original attachments again. Some saved provider-specific
+responses instead raise `ReasoningReplayError` when media is disabled. In that
+case, use the shared assistant-response format described in the
+[replay guide](assistant-turn-replay.md).
 
-This is a policy on recognized attachment slots, **not a recursive security
-scrubber** for tool arguments, reasoning, vendor extensions, or arbitrary nested
-JSON. Compatible adapter-owned opaque assistant state cannot be partially
-rewritten: disabled native media can raise `ReasoningReplayError` asking for a
-portable assistant turn instead. Do not promise that every native replay turns
-into a placeholder; incompatible native state follows the adapter's portable
-fallback rules. See [assistant-turn replay](assistant-turn-replay.md).
+## Connect checks and migration
 
-## Offline configuration versus consented Connect checks
-
-Offline planning constructs an unsaved, unverified proposal with no network:
+Make an offline, unsaved configuration plan:
 
 ```sh
 uv run nooa connect your-model --stage plan --as vision \
   --endpoint https://gateway.example/v1 --api-style chat \
-  --api-key-env MODEL_KEY --media-inputs image,pdf --max-tokens 4096 \
-  > media-plan.json
+  --api-key-env MODEL_KEY --media-inputs image,pdf --max-tokens 4096 > media-plan.json
 ```
 
-Saving is a separate authorized write (`--stage save --input media-plan.json
---output llm_config.yaml`). Make that explicit file discoverable with
-`NEMO_OO_LLM_CONFIG` or load it with `reload_registry(Path(...))`. In the wizard, manual `--media-inputs image,pdf
---no-probe --no-catalogue` with explicit model/endpoint/API style avoids probes
-and catalogue access; `--no-probe` alone is not a blanket no-network guarantee
-because discovery/catalogue may still fetch metadata. `--media-inputs ''` or
-`-` explicitly selects text-only.
+Save separately with `--stage save --input media-plan.json --output llm_config.yaml`.
+Load that file explicitly as above. In the wizard, use explicit model/endpoint/API
+style with `--media-inputs image,pdf --no-probe --no-catalogue` to stay offline;
+`--no-probe` alone can still fetch catalogue metadata.
 
-**Only after approval to spend and send generated samples**, a bounded stage
-can run the configured text baseline plus chosen media checks:
-
-```sh
-uv run nooa connect your-model --stage media --as vision \
-  --endpoint https://gateway.example/v1 --api-style chat \
-  --api-key-env MODEL_KEY --test-media-inputs image,pdf \
-  --max-tokens 4096 --budget-tokens 32768 > media-result.json
-```
-
-Stage mode does not ask for spending consent or save implicitly. The token
-budget is an estimate, not a money cap; failed calls consume allowance and
-checks can be skipped. In wizard mode, `--yes` bypasses approval prompts and
-approves the configured checks and save, so it can trigger billable calls.
-Obtain user authorization before invoking it; stage checks run without a
-consent prompt regardless of `--yes`. `--test-media-inputs` conflicts with `--media-inputs`,
-`--no-probe`, and `--probe minimal` / `--probe none`; in stage mode it is supported only by
-`plan`, `media`, and `all`. Planning tests does not run them.
-
-Generated-sample checks establish bounded request acceptance on the tested
-route, not quality for arbitrary content. Image/PDF checks cover the three API
-styles; audio/video checks currently run only for Chat, and are skipped on other
-styles rather than proven unsupported. Passing formats can be enabled when the
-result is applied/saved; failed retests do not automatically erase previous
-manual permission. Omitted declarations are retained on reconnect only for the
-same route; replacement routes default to text-only. Inspect checks, warnings,
-provenance, and skipped/unverified results before saving. See
+With approval to spend and send generated samples, use `--stage media` with
+`--test-media-inputs image,pdf --max-tokens 4096 --budget-tokens 32768`
+instead of `--media-inputs`.
+This runs a text baseline and media checks, can incur charges, and has no consent
+prompt or automatic save. The token budget is an estimate; failed calls count.
+Wizard `--yes` approves checks and saving. Audio/video checks currently run only
+for Chat. Review passed, failed, and skipped checks before saving; see
 [Connect media setup](model-connect.md#choose-media-inputs-during-setup).
 
-## Migration and source checks
+For existing model entries, add the formats you use. Set `media_inputs: []`
+for text-only models to silence the missing-list warning.
 
-For older aliases that previously relied on implicit media sending, explicitly
-add only the verified/authorized kinds, or set `media_inputs: []` to remain
-text-only and silence the once-per-alias missing-declaration warning. Do not
-bulk-enable media based on model names.
+## Use a different model for one call
 
-Prefer typed method parameters and `show()` in captured cells over hand-built
-message dictionaries. `image_to_content_block` remains an internal
-backward-compatible alias of `media_to_content_block` in
-`nooa.runtime.media_capture`; Media objects themselves have no
-`to_content_block()` method. This checkout exposes no `show_image()` or
-`self.context.add_image()` convenience API; do not copy those spellings from
-older snippets. `self.context` manages prompt blocks, not the cell collector.
+Pass a configured client with `llm=`. Its media settings apply to that call:
 
-The source's older broad wording (File “PDF, etc.”, automatic provider
-conversion, or `show` guaranteeing perception) must be read with the gating and
-adapter limits above. For offline regression verification from this checkout:
-
-```sh
-uv run pytest -q -p no:cacheprovider tests/test_media.py tests/test_media_capture.py \
-  tests/unifiedllm/test_media_inputs.py tests/runtime/test_show_media_filtering.py \
-  tests/strategies/test_predict_media_dedup.py tests/unit/test_media_policy_imports.py
+```python
+vision = get_llm_client("vision")  # Configured with media_inputs: [image]
+facts = await agent.extract(image, llm=vision)
 ```
 
-These tests use local/fake/mocked execution and requests, not paid provider
-validation. Key contracts live in `src/nooa/media.py`,
-`src/nooa/runtime/media_capture.py`, `src/nooa/media_inputs.py`,
-`src/nooa/unifiedllm/media_inputs.py`, `src/nooa/strategies/predict.py`, and
-`src/nooa/strategies/prefill.py`.
+Keep a separate alias for each model and endpoint. Changing the destination
+inside a low-level call, such as `existing_client.acall(messages, model=...)`,
+makes that request text-only. Use `llm=vision` on the agent method instead.
+
+To change a client's formats without editing its saved entry, use
+`get_llm_client("vision", media_inputs=["image", "pdf"])`.
+Set `media_inputs` when configuring or constructing the client.

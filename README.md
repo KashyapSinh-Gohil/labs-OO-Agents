@@ -168,10 +168,9 @@ calls**, use [offline model configuration](https://github.com/NVIDIA-NeMo/labs-O
 guide explains how to avoid that too. Agent-driven stages do not ask for
 spending approval; authorize them before use.
 
-Connect is the recommended onboarding path, not a requirement for raw
-[LiteLLM-supported model names](https://docs.litellm.ai/). Advanced users can
-construct clients directly with explicit routing and credentials; these names
-are not configured aliases and do not carry Connect's verified settings.
+You can also construct clients directly using
+[LiteLLM-supported model names](https://docs.litellm.ai/), with your endpoint
+and credentials. See [manual configuration](https://github.com/NVIDIA-NeMo/labs-OO-Agents/blob/main/docs/model-configuration.md).
 
 ### 2. Your first agent
 
@@ -230,14 +229,17 @@ If the viewer isn't running, tracing is silently disabled — no configuration n
 
 ### 4. Give your agent media inputs
 
-Use `Image`, `Audio`, `Video`, and PDF `File` values as typed method parameters,
-or `show()` them inside generated CodeAct cells. **Models are text-only by
-default**: configure the route's `media_inputs` first, for example `[image, pdf]`
-in the model entry. Connect can declare these manually or test generated
-samples with your approval; it never infers permission from the model name.
+Pass `Image`, `Audio`, `Video`, or PDF `File` objects as method arguments.
+CodeAct can also use `show()` to see media created while it runs.
+
+NOOA assumes models are text-only until configured. Set `media_inputs`, such
+as `[image, pdf]`, in the model entry. Connect lets you choose formats manually
+or test them with generated samples. If you enable a format the provider does
+not accept, requests may fail.
 
 ```python
-from nooa import Agent, Image, PredictStrategy, strategy
+from nooa import Agent, PredictStrategy, strategy
+from nooa.media import Image
 from nooa.unifiedllm import get_llm_client
 
 # This alias must allow image input and use an endpoint that accepts it.
@@ -254,13 +256,12 @@ class PhotoReader(Agent, llm=vision):
 # await vision.aclose()
 ```
 
-Each media class supports `from_file`, `from_bytes(..., media_type=...)`, and
-`from_url`. URL factories do not download; endpoint support varies. Only PDF
-files with PDF MIME are eligible as files. Disabled media becomes a text notice
-in outgoing requests, not a description of the content; stored portable history
-is retained. See the [media API guide](https://github.com/NVIDIA-NeMo/labs-OO-Agents/blob/main/docs/media.md)
-for a complete runnable example, CodeAct `show()`, audio/video/PDF constructors,
-limits, and migration of older aliases.
+Load media with `from_file`, `from_bytes(..., media_type=...)`, or `from_url`.
+URL support depends on the provider. `File` supports PDFs. Formats left out of
+`media_inputs` are replaced with text notices when sending a request.
+
+See the [media API guide](https://github.com/NVIDIA-NeMo/labs-OO-Agents/blob/main/docs/media.md)
+for a complete example, CodeAct `show()`, audio/video/PDF inputs, and limits.
 
 ## Learn more
 

@@ -107,11 +107,10 @@ Automatic discovery reads existing files in this order (later aliases win):
    `NEMO_OO_PROJECT_DIR` overrides the directory containing this file.
 4. Comma-separated paths in `NEMO_OO_LLM_CONFIG`, in the order supplied.
 
-A later definition replaces the **whole alias entry**, not selected fields.
-Use `nooa.llm_config.llm_config_chain()` to inspect the paths in your runtime.
-In a source checkout, project-root detection starts from NOOA's source file,
-not your process's working directory; it falls back to cwd when no source
-ancestor has `pyproject.toml`. Do not assume an arbitrary cwd file is loaded.
+Later files replace the **whole model entry**. Call
+`nooa.llm_config.llm_config_chain()` to see which files your application reads.
+When running from source, NOOA uses the source checkout as the project root.
+For a file elsewhere, use one of the explicit loading methods below.
 
 For the standalone file above, either explicitly reload it in each application
 as shown, or make it discoverable before launching the application:
@@ -199,17 +198,16 @@ responses = ResponsesClient("openai/your-model", media_inputs=["image", "pdf"])
 
 ### What happens to media the model cannot receive
 
-Typed `Media` parameters or `show()` inside captured CodeAct cells can attach
-media even on a text-only route. `show()` outside a collector does not attach
-anything. For recognized public attachments the next request replaces disabled
-media with a short note, for example:
+Pass media as method arguments or use `show()` while CodeAct runs. When a
+format is missing from `media_inputs`, NOOA sends a short note instead of the
+attachment, for example:
 
 - `[An image was removed here because this model is not set up to receive images.]`
 - `[A file was removed here. Only PDF files can be sent to a model.]`
 
-Stored portable history is not changed. Replaying it through a permitted route
-can send the original media again. Opaque native assistant state has additional
-replay constraints; see the [media guide](media.md#text-only-requests-and-replay).
+Stored history keeps the original attachments. Using that history with a model
+configured for those formats can send them again. See the
+[media guide](media.md#text-only-requests-and-replay).
 
 To let a model receive it, add the kind to its entry, for example
 `media_inputs: [video]`, and keep any kinds already listed.

@@ -107,27 +107,22 @@ probes and call that validation of a NOOA entry.
   Responses and recognized Anthropic routes have explicit marker mappings.
   `cache_breakpoint: null` opts out of NOOA markers, not provider implicit caching.
 
-## Configure media explicitly
+## Configure media
 
-Use [nooa-media](../nooa-media/SKILL.md) for attachment authoring. Each route
-is text-only unless its entry explicitly declares `media_inputs` containing
-only supported/authorized kinds: `image`, `audio`, `video`, `pdf`. `File` is
-PDF-only with PDF MIME; there is no arbitrary `file` permission. Preserve the
-same route's declared kinds when editing, but do not transfer permission to
-an unrelated route or infer it from model names/catalogues.
+Set each model's `media_inputs` to the formats its provider accepts: `image`,
+`audio`, `video`, `pdf`. `File` supports PDFs with MIME type `application/pdf`.
+Use [nooa-media](../nooa-media/SKILL.md) for examples.
 
-`--media-inputs image,pdf` is a manual, unverified declaration;
-`--media-inputs ''` or `-` is text-only. For no-network wizard setup, also
-supply the exact model, endpoint and API style, `--no-probe --no-catalogue`.
-With separate spending/sample-transmission approval, `--stage media` plus
-`--test-media-inputs image,pdf` tests the text baseline and generated samples.
-Audio/video checks are currently Chat-only; skipped checks are not evidence
-of rejection. `plan` can describe these tests without executing them.
+- `--media-inputs image,pdf` saves your chosen formats without testing them.
+  An empty list means text-only. Formats left out become text notices in requests.
+- For offline wizard setup, supply the exact model, endpoint and API style,
+  plus `--no-probe --no-catalogue`.
+- With spending approval, `--stage media --test-media-inputs image,pdf` runs
+  the text check and generated samples. Audio/video checks run only for Chat.
+  Read passed, failed and skipped results before saving.
 
-Disabled outgoing media is replaced with plain removal notices; capture
-success is not perception. Generated-sample acceptance is not proof of
-understanding arbitrary content. State manual, passed, skipped and unverified
-results separately and keep all writes and additional calls authorized.
+Keep the existing formats when editing the same model. Check the provider's
+supported formats when configuring a different model or endpoint.
 
 ## Interpret failures and evidence separately
 

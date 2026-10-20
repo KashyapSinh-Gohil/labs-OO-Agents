@@ -50,9 +50,9 @@ for offline setup. Use an already configured registry alias with
 For endpoint setup, credentials, registry edits, reply budgets, reasoning-level
 configuration, caching or Connect diagnostics, use
 [nooa-model-configuration](../nooa-model-configuration/SKILL.md).
-For typed images, audio, video, PDF files, and captured CodeAct `show()`, use
-[nooa-media](../nooa-media/SKILL.md). Models are text-only by default; enabling
-`media_inputs` is explicit route permission, not proof of provider support.
+For images, audio, video, PDFs, and CodeAct `show()`, use
+[nooa-media](../nooa-media/SKILL.md). Configure each model's `media_inputs`
+with the formats your provider accepts.
 The rest of this section covers how an agent selects and inherits its client.
 
 **Resolution cascade** for which LLM a method uses — first match wins:

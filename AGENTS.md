@@ -155,11 +155,10 @@ self.context["project_state"] = Context(expr="self.format_project_state()")
   use saved aliases in agent code. Get permission before inference checks,
   especially noninteractive stages. Offline setup and diagnostics belong in
   `skills/nooa-model-configuration/SKILL.md` and `docs/model-connect.md`.
-- Use typed `Image`, `Audio`, `Video`, and PDF `File` parameters, or `show()`
-  inside captured CodeAct cells. Explicit route-local `media_inputs` is required;
-  absent/empty lists are text-only and outgoing media becomes a removal notice.
-  Do not infer support from names or treat File as arbitrary document upload.
-  See `docs/media.md` and `skills/nooa-media/SKILL.md` for the current API.
+- Import `Image`, `Audio`, `Video`, and `File` from `nooa.media`. Pass them as
+  method arguments or use `show()` while CodeAct runs. Configure `media_inputs`
+  for each model; formats left out are replaced with text notices. `File`
+  supports PDFs. See `docs/media.md` and `skills/nooa-media/SKILL.md`.
 
 ### Tracing
 

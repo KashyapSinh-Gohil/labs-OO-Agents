@@ -39,11 +39,9 @@ The class docstring applies to every agentic method. Keep it short. The method
 docstring describes only the current task. `{self.language}` is appropriate
 because it is trusted configuration not present in the method signature.
 
-For media, string interpolation is not an attachment mechanism. Use typed
-`Image`, `Audio`, `Video`, or PDF `File` parameters; CodeAct can also call
-`show()` inside a captured cell. The route must explicitly allow the kind in
-`media_inputs`, otherwise the outgoing request contains a removal notice.
-See [media inputs](../media.md).
+Pass `Image`, `Audio`, `Video`, or PDF `File` objects as method arguments.
+CodeAct can also use `show()` while generated code runs. Set the model's
+`media_inputs` to the formats it accepts. See [media inputs](../media.md).
 
 The `text` parameter is already rendered by the strategy. Do not repeat it as
 `{text}` in the docstring.

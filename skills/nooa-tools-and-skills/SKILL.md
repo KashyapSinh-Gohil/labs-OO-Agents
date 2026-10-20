@@ -122,7 +122,7 @@ the resulting URL, header, argument, or environment value directly to
 ## Multimodal media
 
 ```python
-from nooa import Image, Audio, Video, File
+from nooa.media import Image, Audio, Video, File
 
 class MediaAgent(Agent, llm=llm):
     async def describe(self, image: Image) -> str:
@@ -133,17 +133,13 @@ img = Image.from_file("photo.png")     # also .from_bytes(media_type=...), .from
 await MediaAgent().describe(img)
 ```
 
-Configure the route's `media_inputs` explicitly (e.g. `[image, pdf]`) before
-expecting perception. Missing/empty declarations are text-only: outgoing
-attachments are replaced with removal notices, not automatically sent or
-interpreted. A declared kind still requires actual endpoint support.
+Set the model's `media_inputs` to the formats your provider accepts, such as
+`[image, pdf]`. Formats left out are replaced with text notices in requests.
 
-Default CodeAct prefill shows direct Media parameters; Predict attaches them
-directly. Generated CodeAct can call `show(obj)` for media created during a
-cell; outside capture it only prints a not-captured notice. `File` is PDF-only
-with exact PDF MIME, not arbitrary document upload. Use
-[nooa-media](../nooa-media/SKILL.md) for the current constructors, URL/MIME
-caveats, attachment limits, replay behavior, and checked examples.
+Predict and default CodeAct attach direct media arguments. While CodeAct runs,
+use `show(obj)` for media created by generated code or tools. Outside execution,
+`show()` prints a not-captured notice. `File` supports PDFs with MIME type
+`application/pdf`. See [nooa-media](../nooa-media/SKILL.md) for examples and limits.
 
 ## Pitfalls
 
