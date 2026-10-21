@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for nooa.prompts — print_prompt() runtime API and rendering helpers."""
 
+from typing import Annotated
+
 import pytest
 
 import nooa
-from nooa import Agent, CodeActStrategy, PromptData, strategy
+from nooa import Agent, CodeActStrategy, PromptData, spec, strategy
 from nooa.config.truncation_config import FormatConfig, TruncationConfig
 from nooa.prompts import (
     _get_prefill,
@@ -356,12 +358,14 @@ class TestBuildPromptDataRuntime:
         assert "max_string=91000" in data.inspect_prefill
 
     @pytest.mark.asyncio
-    async def test_class_and_instance_truncation_layers_used_for_prefill(self):
+    @pytest.mark.parametrize("strategy_type", [CodeActStrategy, PurePythonStrategy])
+    async def test_class_and_instance_truncation_layers_used_for_prefill(self, strategy_type):
         class LayeredAgent(
             Agent,
             llm=_LLM,
             truncation=TruncationConfig(prefill_format=FormatConfig(max_string=321)),
         ):
+            @strategy(strategy_type())
             async def analyze(self, data: str) -> str:
                 """Analyze the data."""
                 ...
@@ -378,6 +382,36 @@ class TestBuildPromptDataRuntime:
         assert instance_data.inspect_prefill is not None
         assert "max_string=321" in class_data.inspect_prefill
         assert "max_string=654" in instance_data.inspect_prefill
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("strategy_type", [CodeActStrategy, PurePythonStrategy])
+    async def test_prefill_truncation_precedence(self, strategy_type):
+        class LayeredAgent(
+            Agent,
+            llm=_LLM,
+            truncation=TruncationConfig(
+                prefill_format=FormatConfig(max_string=321, max_length=17),
+            ),
+        ):
+            @strategy(
+                strategy_type(),
+                truncation=TruncationConfig(
+                    prefill_format=FormatConfig(max_string=90_000, max_depth=9),
+                ),
+            )
+            async def analyze(self, data: str, full: Annotated[str, spec(max_string=None)]) -> str:
+                """Analyze the inputs."""
+                ...
+
+        agent = LayeredAgent(
+            truncation=TruncationConfig(
+                prefill_format=FormatConfig(max_string=654, max_length=23),
+            ),
+        )
+        data = await build_prompt_data(agent.analyze, "hello", "complete")
+        assert data.inspect_prefill is not None
+        assert "pprint(data, max_length=23, max_string=90000, max_depth=9)" in data.inspect_prefill
+        assert "pprint(full, max_length=23, max_string=None, max_depth=9)" in data.inspect_prefill
 
 
 class TestPrintPromptRuntime:

@@ -1,6 +1,6 @@
 ---
 name: nooa-codeact-advanced
-description: Advanced tuning of NOOA strategies — CodeAct prefill (understanding, disabling, custom, pre-ellipsis code), loop guards (max_iterations, retries, text-only stop), truncation tuning (TruncationConfig/CaptureConfig/FormatConfig), code restrictions (RestrictionsConfig), execution environment internals, and PredictStrategy tuning (retries, param guards, output_serialization). Use when configuring CodeActConfig or PredictConfig beyond defaults, writing a custom prefill, restricting generated code, or debugging truncation/eviction behavior.
+description: Advanced tuning of NOOA strategies — CodeAct prefill, loop guards, text-only recovery callbacks, truncation, code restrictions, execution internals, and PredictStrategy tuning. Use when configuring CodeActConfig or PredictConfig beyond defaults, handling models that return prose instead of tool calls, writing a custom prefill, restricting generated code, or debugging truncation and eviction.
 compatibility: nooa package
 ---
 
@@ -10,7 +10,7 @@ The authoring basics are in `nooa-agent-authoring`. This skill covers the deep c
 
 ## Config plumbing rules (read first)
 
-- Strategy constructors take **`config=` only**: `CodeActStrategy(config=CodeActConfig(...))`, `PredictStrategy(PredictConfig(...))`. Flat kwargs (`CodeActStrategy(max_iterations=10)`, `CodeActStrategy(prefill=...)`) do not exist, despite some docstring examples.
+- Configuration fields go through **`config=`**: `CodeActStrategy(config=CodeActConfig(...))`, `PredictStrategy(PredictConfig(...))`. Flat config kwargs (`CodeActStrategy(max_iterations=10)`, `CodeActStrategy(prefill=...)`) do not exist. Strategy-level extension points such as `CodeActStrategy(on_text_only=...)` and `CodeActStrategy(error_formatter=...)` are separate keyword arguments.
 - All config objects are frozen Pydantic models with `merge_with(other)`: only fields explicitly set on `other` override. **Configs must be freshly constructed** — anything round-tripped through `model_dump()`/`model_validate()` has an empty `model_fields_set` and `merge_with` raises.
 - Truncation layers: framework default → `Agent` class kwarg `truncation=` → instance kwarg → `@strategy(..., truncation=...)` per method. `TruncationConfig.merge_with` deep-merges sub-configs field-by-field; the strategy configs merge flat.
 
@@ -20,18 +20,6 @@ Before the first LLM turn, CodeAct runs up to two **synthetic `execute_python` c
 
 1. **The prefill plugin** (default `InspectInputsPrefill()`): generates code that prints the call signature, `pprint()`s each parameter under `truncation.prefill_format` limits (defaults `max_string=2000, max_length=25, max_depth=4`), auto-`show()`s `Media` parameters for multimodal perception, and prints `doc()` of a complex return type. Per-parameter limits come from `Annotated[T, spec(max_string=..., max_length=...)]` on the signature.
 2. **Pre-ellipsis code**: statements between the docstring and the `...` are extracted from the AST and run verbatim as the second prefill cell — with or without the plugin.
-
-Use `None` to disable one formatting limit for a specific parameter:
-
-```python
-async def analyze(
-    self,
-    document: Annotated[str, spec(max_string=None)],
-    samples: Annotated[list, spec(max_length=100, max_depth=6)],
-) -> Result:
-    """Analyze the document and samples."""
-    ...
-```
 
 ```python
 class Notifier(Agent, llm=llm):
@@ -54,15 +42,72 @@ class Notifier(Agent, llm=llm):
 | `max_iterations` | `None` | **Unlimited.** The loop then stops only on completion, the error budget, or a hard abort. |
 | `max_retries` | `3` | **Cumulative session error budget, not consecutive** (the counter is never reset). LLM API errors, bad tool JSON, empty code, and `return_result` validation failures all count. |
 | `max_consecutive_text_only` | `3` | Consecutive no-tool-call text replies before hard abort; `0` disables. Any real tool call resets the counter. |
-| `text_only_stop_behavior` | `"return_result"` | Text-only reply → try to validate the text as the final result; on failure, a visible correction `Error` is added. `"synthetic_reasoning"` instead converts the text to a no-op `reasoning(...)` cell whose tool result says the task is NOT finished. |
 | `cell_timeout` | `None` | Per-cell `asyncio.wait_for` limit in seconds; `None` = unlimited. Cannot interrupt a truly blocking sync syscall — that's what the blocking-call AST validation is for. |
 | `max_tokens` / `temperature` / `top_p` | `None` | Passed to every generation call when set (model defaults otherwise). On empty responses with `finish_reason="length"` CodeAct aborts and tells you to raise `max_tokens` (16384+ for reasoning models). |
-| `translate_tool_calls` | `False` | When a weak model calls an agent method directly as a tool (instead of via `execute_python`), rewrite it into equivalent code and run it — teaching the right pattern. Off = error listing the two valid tools. |
+| `translate_tool_calls` | `False` | When a weak model calls an agent method directly as a tool (instead of via `execute_python`), rewrite it into equivalent code and run it — teaching the right pattern. Off = an error naming the valid tools and showing the rejected name as Python-cell code: the equivalent call for a public callable on `self`, `doc(self.name)` for an attribute object, or `doc(self)` when the name does not resolve. |
 | `restrictions` | `RestrictionsConfig()` | See Restrictions below. |
 | `prefill` | `InspectInputsPrefill()` | See Prefill above. |
 | `max_tool_calls` | `None` | **Dead — declared but never read.** Setting it does nothing. |
+| `loop_guard` | `None` | Opt-in `LoopGuardConfig()` (defaults `repeat_threshold=7`, `window=15`, `max_outcome_chars=500`). A call (tool name + normalized arguments; comments and formatting ignored) whose last `repeat_threshold - 1` runs in the window failed identically is not run again; one that produced identical output `repeat_threshold` times runs with a warning. Repeating either within the window after the warning raises `LoopDetectedError`. Messages are fixed templates; a `LoopGuardTriggered` event records each warning or stop. |
 
-`tool_choice` is hardcoded `"auto"`. There is no `allow_text_response` option (older docs mention one) — text handling is entirely the two text-only knobs.
+`tool_choice` is hardcoded `"auto"`.
+
+## Text-only recovery callback
+
+CodeAct expects each model turn to call `execute_python` or `return_result`.
+When a model emits only prose, NOOA preserves that exact assistant turn and
+then invokes the strategy's `on_text_only` callback.
+
+Do not pass `TextOnlyResponseAction` to `@strategy`. The objects have distinct
+roles:
+
+```text
+@strategy attaches CodeActStrategy to a method
+    -> CodeActStrategy(on_text_only=handler) registers the callback
+        -> handler(TextOnlyResponseContext) returns TextOnlyResponseAction
+```
+
+The callback may be synchronous or asynchronous. Its context contains the
+untouched `LLMResponse`, normalized text, current method call, and declared
+return type. Its action chooses one of three append-only recovery paths:
+
+| Action constructor | Effect |
+|---|---|
+| `TextOnlyResponseAction.return_result(value)` | Validate `value` through CodeAct's normal result path. Invalid values produce model-visible correction feedback. |
+| `TextOnlyResponseAction.retry(*events)` | Append feedback events, then ask the model again. |
+| `TextOnlyResponseAction.tool_calls(*calls)` | Run synthetic calls while retaining the original assistant turn. Use `execute_python`, not TUI-only tools. |
+
+The safe default is `retry_text_only_response`: it appends an `Error` asking
+the model to call `return_result(value)` or `execute_python(code)`, then retries.
+Opt into accepting prose only when that is appropriate for the method contract:
+
+```python
+from nooa import Agent, CodeActStrategy, return_text_as_result, strategy
+
+
+class Summarizer(Agent, llm=llm):
+    @strategy(CodeActStrategy(on_text_only=return_text_as_result))
+    async def summarize(self, text: str) -> str:
+        """Summarize the text."""
+        ...
+```
+
+For custom policy, return an action from the callback:
+
+```python
+from nooa import TextOnlyResponseAction, TextOnlyResponseContext
+from nooa.events import Error
+
+
+def require_tool(context: TextOnlyResponseContext) -> TextOnlyResponseAction:
+    return TextOnlyResponseAction.retry(
+        Error(content=f"Plain text cannot finish {context.call.method_name}; call a tool.")
+    )
+
+
+@strategy(CodeActStrategy(on_text_only=require_tool))
+async def investigate(self, question: str) -> str: ...
+```
 
 ## `return_result` mechanics
 
@@ -74,7 +119,7 @@ Coercion before validation, in order: bare values wrapped to the schema; string 
 
 - **exec_globals** = the agent module's namespace across the full MRO (minus `hidden` names) + method parameters as variables + auto-injected symbols: `self`, `asyncio`, `typing` (+`Annotated/Any/Literal/Optional/Union`), `doc`, `pprint`, `show`, media classes, `strategy` + all strategy classes, `reasoning`, `return_result`. `help` is shadowed to `doc` so nothing blocks on stdin.
 - **REPL state persists** across cells (globals-declared wrapper); helper functions defined in cells persist as REPL locals — they are never attached to the agent, and attaching callables to `self` is validator-rejected. Return-type names are re-injected if the model clobbers them. `Out[n]` gives Jupyter-style access to prior cell values.
-- **Media**: `show(obj)` attaches images/files to the cell's output, capped by `truncation.media_capture.max_attachments_per_execution` (default 5, **per cell**).
+- **Media**: `show(obj)` attaches images, audio, video, PDFs, PIL images, or matplotlib figures while a cell runs. The normal runtime keeps the first 5 attachments per cell; adjust `truncation.media_capture.max_attachments_per_execution`. Configure the model's `media_inputs` with accepted formats. See [nooa-media](../nooa-media/SKILL.md) for examples and size limits.
 - **Custom error formatting**: `CodeActStrategy(config=..., error_formatter=obj)` where `obj.format(error, code=None, *, line_offset=0) -> str`. Default is the IPython-style formatter (cell/line references, framework frames filtered, signature hint on call-shape TypeErrors).
 
 ## Truncation tuning (`TruncationConfig`)
@@ -83,13 +128,6 @@ Two independent mechanisms — set them separately:
 
 1. **Capture time** (`capture: CaptureConfig`) — per-cell stream caps with head/tail truncation: `max_stdout=50_000`, `max_stderr=2_000`, `max_error=10_000` chars; `tail=None` (half the budget); `file_backed=True` (default `False`) streams the *full* output to a temp file and puts its path in the truncation notice so the LLM can grep it.
 2. **Render time** (`FormatConfig` triplet = `pformat` bounds `max_string/max_length/max_depth`): `event_format` (event fields, every turn; defaults 10_000/200/5), `prefill_format` (parameter inspection; 2_000/25/4), `context_block_format` (non-string context values; unlimited — overflow handled by block eviction).
-
-Rendering precedence is framework defaults → agent class → agent instance →
-method `@strategy(..., truncation=...)` → the parameter's `spec()` metadata.
-`spec(max_string=None)` disables the formatting bound only for that parameter.
-Because the inspection prefill prints through stdout, `capture.max_stdout` still
-applies independently; raise it explicitly if the complete printed value can
-exceed the default 50,000-character capture budget.
 
 Context budget: `max_context_tokens` — or, when unset and the model exposes a context window, half the *usable* window (`(context_window - reserved_output) // 2`, where `reserved_output` is the call's `max_tokens`, else `TruncationConfig.response_reserve_tokens`, default 4096; setting `response_reserve_tokens=0` disables the auto-derived budget). Over-budget triggers **whole-block eviction** of SYSTEM context blocks — newest non-`static` user blocks first, marked `EVICTED: over context budget` in place. Static framework blocks (`system_prompt`, `self`) are never evicted. No token counter is required: eviction sizes blocks as `chars × ratio`, where the ratio is calibrated from each provider response's reported prompt tokens (cold-start ~4 chars/token before the first response). Inspect usage via `agent.context_stats` — token figures are provider-reported (`prompt_tokens`); the context-vs-events breakdown is attributed by character share and `ctx N%` is measured against the usable window.
 
@@ -134,7 +172,7 @@ Single LLM turn, no tools, no code. The prompt is the docstring plus each parame
 | `max_retries` | `10` | Validation retries. Each failure adds an `Error` event with the formatted validation error plus the raw output truncated to `max_error_chars` (1000). Exhaustion raises `GenerationError` (not ValidationError). |
 | `max_param_chars` | `200_000` | **Hard pre-flight guard, not a truncator**: any parameter whose `repr` exceeds it raises `ValueError` — Predict is single-shot, so a silently-truncated input would mean silently-wrong output. Chunk the input or raise/disable (`None`) the limit. |
 | `max_tokens` / `temperature` / `top_p` | `None` | Forwarded to the LLM call when set. |
-| `output_serialization` | `"event"` | How the result is recorded in history: `"event"` keeps the LLMOutput (replayed as a plain assistant message); `"tool_call"` replaces it with a synthetic `return_result` ToolCallEvent — prefer it when a downstream tool-using model reads this history. |
+| `output_serialization` | `"event"` | How the result is recorded in history: `"event"` keeps the LLMResponse (replayed as a plain assistant message); `"tool_call"` also appends a synthetic `return_result` ToolCallEvent — prefer it when a downstream tool-using model reads this history. |
 
 - Return-type handling: `Optional[X]` unwraps; `dict[K,V]` uses a root-object schema; bare `list`/scalars are wrapped in a hidden `{"value": ...}` schema (Responses-API rejects array-rooted schemas) and unwrapped after validation; models with hidden fields get a public-subset schema and are rehydrated. Non-JSON-serializable **return types** (DataFrame, ndarray) are rejected up front with a pointer to CodeAct (parameters are only size-checked via `max_param_chars`).
 - Reasoning models: the JSON must land in `content`; `reasoning` is only used as a fallback when content is empty. Prose-in-content + JSON-in-reasoning fails and retries.
