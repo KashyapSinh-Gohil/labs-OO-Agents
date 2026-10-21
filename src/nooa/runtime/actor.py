@@ -1633,8 +1633,15 @@ class ActorRuntime:
             # still wrap the cell on the parent. The worker owns the namespace,
             # stdout capture and wrapper, so we skip the in-process exec below.
             if sandbox_executor is not None:
-                result = await sandbox_executor.run_cell(code, execution_count=execution_count)
-                return cast(ExecutionResult, result)
+                sandbox_result = cast(
+                    ExecutionResult,
+                    await sandbox_executor.run_cell(code, execution_count=execution_count),
+                )
+                from nooa.agentdoc._format_observation import record_truncation
+
+                for reason in sandbox_result.truncation_reasons:
+                    record_truncation(reason)
+                return sandbox_result
 
             # Set up stdout/stderr capture BEFORE ast.parse/compile so that
             # SyntaxWarnings (e.g. invalid escape sequences in LLM-generated code)
@@ -2046,6 +2053,11 @@ class ActorRuntime:
             # NOTE: We do NOT restore sys.stdout/sys.stderr here.
             # The ContextVarStream wrappers are transparent (fall through to original
             # when no buffer is set) and must persist for parallel async executions.
+
+            if isinstance(stdout_buffer, TruncatingStringIO) and stdout_buffer.was_truncated:
+                from nooa.agentdoc._format_observation import record_truncation
+
+                record_truncation("capture.max_stdout")
 
             # Reset task-local stdout/stderr buffers and stdin blocking (only if they were set)
             if stdout_token is not None:
