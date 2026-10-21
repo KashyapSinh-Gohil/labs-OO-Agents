@@ -115,6 +115,7 @@ def test_warning_bypasses_model_stderr(monkeypatch):
     """A nested call's warning goes to the developer, not an enclosing REPL cell."""
 
     def showwarning(message, category, filename, lineno, file=None, line=None):
+        """Exercise Python's stderr delivery instead of pytest's warning recorder."""
         sys.stderr.write(warnings.formatwarning(message, category, filename, lineno, line))
 
     developer_stderr = io.StringIO()
@@ -144,6 +145,7 @@ async def test_observations_are_task_local_and_reset_after_errors():
     """Concurrent and failed inspections cannot leak state into other calls."""
 
     async def render(value):
+        """Observe one task's formatting across a scheduling boundary."""
         with observe_truncation() as reasons:
             await asyncio.sleep(0)
             pformat(value, max_string=3)

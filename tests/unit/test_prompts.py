@@ -329,6 +329,8 @@ class TestBuildPromptDataRuntime:
 
     @pytest.mark.asyncio
     async def test_method_truncation_override_used_for_codeact_prefill(self):
+        """CodeAct inspection honors the method's string formatting limit."""
+
         class MethodOverrideAgent(Agent, llm=_LLM):
             @strategy(
                 CodeActStrategy(),
@@ -344,6 +346,8 @@ class TestBuildPromptDataRuntime:
 
     @pytest.mark.asyncio
     async def test_method_truncation_override_used_for_pure_python_prefill(self):
+        """PurePython inspection honors the method's string formatting limit."""
+
         class MethodOverrideAgent(Agent, llm=_LLM):
             @strategy(
                 PurePythonStrategy(),
@@ -360,6 +364,8 @@ class TestBuildPromptDataRuntime:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("strategy_type", [CodeActStrategy, PurePythonStrategy])
     async def test_class_and_instance_truncation_layers_used_for_prefill(self, strategy_type):
+        """Instance settings override class settings in both strategies' previews."""
+
         class LayeredAgent(
             Agent,
             llm=_LLM,
@@ -386,6 +392,8 @@ class TestBuildPromptDataRuntime:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("strategy_type", [CodeActStrategy, PurePythonStrategy])
     async def test_prefill_truncation_precedence(self, strategy_type):
+        """Method settings merge with instance limits before parameter overrides."""
+
         class LayeredAgent(
             Agent,
             llm=_LLM,
