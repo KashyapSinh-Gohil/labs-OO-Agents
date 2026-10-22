@@ -270,6 +270,7 @@ class Agent(metaclass=AgentMeta):
         cm = self.context_manager
         cm.set_static_protected("system_prompt", expr="self._resolve_system_prompt()")
         cm.set_static_protected("self", expr="doc(type(self))")
+        cm.set_static_protected("events_api", expr="self._events_api_prompt()")
         cm.set_dynamic_protected(
             "state",
             "pformat(self, max_length=50, max_string=500, max_depth=4)",
@@ -531,6 +532,27 @@ class Agent(metaclass=AgentMeta):
     def decision_model(self) -> "UnifiedDecisionModel | None":
         """Return the decision model configured for this agent, if any."""
         return self._decision_model
+
+    @no_trace
+    @hidden
+    def _events_api_prompt(self) -> str:
+        """Expose event guidance only when the instance exposes its events API."""
+        from nooa.agentdoc.visibility import is_hidden_field
+
+        if is_hidden_field(self, "events"):
+            return ""
+        return """Use self.events to search past tasks, tool calls, outputs, and errors.
+Before using it in Python, inspect the API with print(doc(self.events)).
+Keep context small: query selectively with filters and limits, and print only
+the relevant fields rather than dumping the entire history.
+After completing a phase, collapse history that is no longer needed in detail:
+self.events.collapse(start_tag, end_tag, summary_text).
+Use existing event tags (self.events.keys() lists active tags). Preserve key
+findings, decisions, unresolved issues, and references in a concise summary.
+Original events remain accessible by tag through self.events.get(tag), including
+after compaction; retrieve details only when needed. Use this API when Python
+execution is available; do not claim to have compacted history without executing it.
+"""
 
     @no_trace
     @hidden
