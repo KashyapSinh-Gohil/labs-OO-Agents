@@ -3,7 +3,7 @@
 """Prompt visibility for the context and events APIs.
 
 The execution context no longer renders the old Skills table. Events usage
-and compaction guidance lives in a dedicated framework block, enabled by
+guidance lives in a dedicated framework block, enabled by
 instance-level visibility and shared across strategies. Hidden events must
 not inject that block, including after visibility changes on an existing agent.
 """
@@ -138,27 +138,27 @@ async def test_events_guidance_tracks_instance_visibility(method_name):
     agent = _EventsOnlyAgent()
     method = getattr(agent, method_name)
     prompt = (await build_prompt_data(method)).system_prompt or ""
-    assert "Keep context small" in prompt
+    assert "You MUST call doc(self.events) before using it" in prompt
     assert "print(doc(self.events))" in prompt
-    assert "self.events.collapse(start_tag, end_tag, summary_text)" in prompt
-    assert "Original events remain accessible" in prompt
+    assert "Query past events by type, tag, text, or call ID" in prompt
+    assert "self.events.collapse" not in prompt
 
     spec(agent, "events", hidden=True)
     prompt = (await build_prompt_data(method)).system_prompt or ""
-    assert "Keep context small" not in prompt
-    assert "self.events.collapse" not in prompt
+    assert "You MUST call doc(self.events) before using it" not in prompt
+    assert "print(doc(self.events))" not in prompt
 
     spec(agent, "events", hidden=False)
     prompt = (await build_prompt_data(method)).system_prompt or ""
-    assert "Keep context small" in prompt
+    assert "You MUST call doc(self.events) before using it" in prompt
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("agent_cls", [_BaseAgent, _ContextOnlyAgent])
 async def test_hidden_events_have_no_guidance(agent_cls):
     prompt = (await build_prompt_data(agent_cls().go)).system_prompt or ""
-    assert "Keep context small" not in prompt
-    assert "self.events.collapse" not in prompt
+    assert "You MUST call doc(self.events) before using it" not in prompt
+    assert "print(doc(self.events))" not in prompt
 
 
 class TestSkillsSectionVisibility:

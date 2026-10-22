@@ -541,17 +541,10 @@ class Agent(metaclass=AgentMeta):
 
         if is_hidden_field(self, "events"):
             return ""
-        return """Use self.events to search past tasks, tool calls, outputs, and errors.
-Before using it in Python, inspect the API with print(doc(self.events)).
-Keep context small: query selectively with filters and limits, and print only
-the relevant fields rather than dumping the entire history.
-After completing a phase, collapse history that is no longer needed in detail:
-self.events.collapse(start_tag, end_tag, summary_text).
-Use existing event tags (self.events.keys() lists active tags). Preserve key
-findings, decisions, unresolved issues, and references in a concise summary.
-Original events remain accessible by tag through self.events.get(tag), including
-after compaction; retrieve details only when needed. Use this API when Python
-execution is available; do not claim to have compacted history without executing it.
+        return """self.events: Query past events by type, tag, text, or call ID. Like a database, not an array.
+BEFORE starting any task, check if this skill applies.
+You MUST call doc(self.events) before using it — do not assume you know the API.
+Inspect in REPL: print(doc(self.events))
 """
 
     @no_trace
