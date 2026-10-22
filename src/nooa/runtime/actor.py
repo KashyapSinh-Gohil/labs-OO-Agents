@@ -3258,6 +3258,13 @@ class ActorRuntime:
         # Apply the resolved cache (the only side effect)
         self.agent.context_manager._update_resolved(build_result.resolved_cache)
 
+        # Hidden APIs must not leave even an empty guidance tag in the prompt.
+        # Filter the resolved blocks without mutating persistent registration,
+        # so a later visibility change can expose the guidance again.
+        from nooa.agentdoc.visibility import is_hidden_field
+
+        if is_hidden_field(self.agent, "events"):
+            return [block for block in build_result.blocks if block.key != "events_api"]
         return build_result.blocks
 
     def _update_context_limits(self, llm_client: Any, params: dict[str, Any]):

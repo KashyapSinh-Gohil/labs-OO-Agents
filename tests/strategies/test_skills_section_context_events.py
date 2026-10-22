@@ -135,9 +135,11 @@ async def _render_execution_context(agent: Agent) -> str:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method_name", ["go", "go_v2", "predict", "pure_python"])
 async def test_events_guidance_tracks_instance_visibility(method_name):
+    """Visibility toggles the entire guidance block across all strategies."""
     agent = _EventsOnlyAgent()
     method = getattr(agent, method_name)
     prompt = (await build_prompt_data(method)).system_prompt or ""
+    assert "<events_api" in prompt
     assert "You MUST call doc(self.events) before using it" in prompt
     assert "print(doc(self.events))" in prompt
     assert "Query past events by type, tag, text, or call ID" in prompt
@@ -145,18 +147,22 @@ async def test_events_guidance_tracks_instance_visibility(method_name):
 
     spec(agent, "events", hidden=True)
     prompt = (await build_prompt_data(method)).system_prompt or ""
+    assert "<events_api" not in prompt
     assert "You MUST call doc(self.events) before using it" not in prompt
     assert "print(doc(self.events))" not in prompt
 
     spec(agent, "events", hidden=False)
     prompt = (await build_prompt_data(method)).system_prompt or ""
+    assert "<events_api" in prompt
     assert "You MUST call doc(self.events) before using it" in prompt
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("agent_cls", [_BaseAgent, _ContextOnlyAgent])
 async def test_hidden_events_have_no_guidance(agent_cls):
+    """Hidden events inject neither instructions nor an empty XML block."""
     prompt = (await build_prompt_data(agent_cls().go)).system_prompt or ""
+    assert "<events_api" not in prompt
     assert "You MUST call doc(self.events) before using it" not in prompt
     assert "print(doc(self.events))" not in prompt
 
