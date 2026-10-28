@@ -9,6 +9,7 @@ The design follows "Type Names are Prompts" - the LLM sees `EventsApi` as
 a database-like interface for querying past interactions.
 """
 
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Protocol
 
 from nooa.events import EventBase
@@ -64,13 +65,12 @@ class EventsApi(Skill):
         tasks = events.query(type="Task", query="summarise")
 
     Context compaction:
-        When context grows too large, use events to summarize or collapse
-        old history. The summarizer does this automatically at token budget
-        thresholds, but you can also compact manually:
+        Keep context small by collapsing completed work into concise summaries.
+        Preserve key findings, decisions, unresolved issues, and references:
 
         events.query(limit=20)       # inspect what's taking space
-        # Summarization happens at the runtime level — old events get
-        # replaced by summary events with range tags like "1..22".
+        events.collapse("1", "22", "Key findings and remaining work...")
+        # Old events are replaced by summary events with range tags like "1..22".
         # After compaction, access originals via summary.children_tags.
 
     Load this library:
@@ -85,6 +85,7 @@ class EventsApi(Skill):
         *,
         type: str | None = None,
         call_id: str | None = None,
+        related_call_ids: Collection[str] | None = None,
         execution_status: str | None = None,
         query: str | None = None,
         regex: bool = False,
@@ -97,7 +98,9 @@ class EventsApi(Skill):
 
         Args:
             type: Event type filter (e.g., "Task", "PythonOutput", "ToolCallEvent")
-            call_id: Call ID filter (matches metadata.call_id)
+            call_id: Exact originating call ID.
+            related_call_ids: Match any represented call ID, including mixed-call summaries.
+                None disables this filter; an empty collection matches nothing.
             execution_status: PythonOutput status filter (e.g. "error" or "complete")
             query: Text search (case-insensitive substring, or regex if regex=True)
             regex: If True, treat query as regex pattern
@@ -118,6 +121,7 @@ class EventsApi(Skill):
         return self._manager.filter(
             type=type,
             call_id=call_id,
+            related_call_ids=related_call_ids,
             execution_status=execution_status,
             query=query,
             regex=regex,

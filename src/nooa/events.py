@@ -19,16 +19,18 @@ Type names follow "Type Names are Prompts" - no redundant "Event" suffix.
 """
 
 from collections.abc import Callable
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, field_serializer
 from pydantic_core import PydanticSerializationError, to_json
 
+from nooa._immutable_json import NativeJSON
 from nooa.agentdoc import spec
 from nooa.context_blocks import EventBase as EventBase
 from nooa.context_blocks import ResultStatus as ResultStatus
 from nooa.context_blocks.models import Role
 from nooa.llm_types import LLMResponse as LLMResponse
+from nooa.llm_types import LLMUsage as LLMUsage
 
 # Sentinel value to distinguish "no return" from "return None"
 _NO_RETURN = object()
@@ -373,7 +375,6 @@ class BeforeAgentCall(EventBase):  # type: ignore[misc]
     _role: ClassVar[Role] = Role.RUNTIME_EVENT
 
     method_name: Annotated[str, Field(description="Name of the agent method being invoked")]
-    call_id: Annotated[str, Field(description="Unique ID for this agent-method call")]
     parent_call_id: str | None = Field(
         default=None, description="Nearest traced ancestor call ID, or None at the top level"
     )
@@ -393,7 +394,6 @@ class AfterAgentCall(EventBase):  # type: ignore[misc]
     _role: ClassVar[Role] = Role.RUNTIME_EVENT
 
     method_name: Annotated[str, Field(description="Name of the agent method that was invoked")]
-    call_id: Annotated[str, Field(description="Unique ID for this agent-method call")]
     parent_call_id: str | None = Field(
         default=None, description="Nearest traced ancestor call ID, or None at the top level"
     )
@@ -507,6 +507,57 @@ class LLMCallEnd(EventBase):  # type: ignore[misc]
     )
 
 
+class DecisionCallStart(EventBase):  # type: ignore[misc]
+    """Emitted immediately before a decision-client round-trip."""
+
+    _role: ClassVar[Role] = Role.RUNTIME_EVENT
+
+    method_name: str
+    generation_id: str
+    question_count: int
+    model: str
+
+
+class DecisionCallEnd(EventBase):  # type: ignore[misc]
+    """Emitted after a decision-client round-trip succeeds or fails."""
+
+    _role: ClassVar[Role] = Role.RUNTIME_EVENT
+
+    method_name: str
+    generation_id: str
+    question_count: int
+    model: str
+    success: bool = True
+    exception_type: str | None = None
+
+
+class DecisionRecord(EventBase):  # type: ignore[misc]
+    """Durable record of one logical decision-model call.
+
+    Unlike the transient decision lifecycle events, this metadata event is
+    persisted for inspection and replay but never rendered into a later model
+    prompt.
+    """
+
+    _role: ClassVar[Role] = Role.METADATA
+
+    decision_call_id: str
+    method_name: str
+    generation_id: str
+    state: Any
+    questions: dict[str, Any]
+    answers: dict[str, Any] | None = None
+    decision_source: Literal["native", "llm"] = "native"
+    question_digest: str | None = None
+    requested_model: str
+    resolved_model: str | None = None
+    response_id: str | None = None
+    usage: LLMUsage | None = None
+    raw_response: NativeJSON | None = Field(default=None, repr=False)
+    success: bool = False
+    exception_type: str | None = None
+
+
 class Notification(EventBase):  # type: ignore[misc]
     """Generic "something happened" signal rendered into the LLM context.
 
@@ -584,6 +635,15 @@ class Summary(EventBase):  # type: ignore[misc]
 
     _role: ClassVar[Role] = Role.ASSISTANT  # LLM's own recap of past actions
 
+    source_call_ids: list[str] = Field(
+        repr=False, description="Sorted call IDs covered by this summary"
+    )
+
+    @property
+    def related_call_ids(self) -> frozenset[str]:
+        """Union of calls represented by the collapsed source events."""
+        return frozenset(self.source_call_ids)
+
     # The tag for this summary event (e.g., "2..40") - REQUIRED
     summary_tag: Annotated[
         str,
@@ -609,7 +669,7 @@ class SystemPrompt(EventBase):  # type: ignore[misc]
     Fired by ``runtime.generate()`` right after the messages list is
     built. Carries the rendered ``messages[0].content`` (the static
     system prompt: strategy prompt + ``doc(self)`` + static context
-    blocks). The trailing dynamic-context envelope is captured
+    blocks). The rendered trailing dynamic-context blocks are captured
     separately on :class:`LLMResponse.dynamic_context`.
 
     Uses ``Role.RUNTIME_EVENT`` to keep it out of LLM context — this is
@@ -676,6 +736,10 @@ class ExecutionResult(BaseModel):
 
     stdout: str = Field(default="", description="Captured stdout from execution")
     stderr: str = Field(default="", description="Captured stderr from execution")
+    truncation_reasons: list[str] = Field(
+        default_factory=list,
+        description="Formatting omissions reported by an isolated execution worker",
+    )
     error: Exception | None = Field(default=None, description="Exception if execution failed")
     signal: ExecutionSignal | None = Field(
         default=None, description="Control flow signal (not an error), e.g. return_result()"

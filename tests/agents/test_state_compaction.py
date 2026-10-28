@@ -14,6 +14,7 @@ from nooa.agents.summarization import summary_fork_active
 from nooa.config.summarizer_config import TokenBudgetConfig
 from nooa.context_blocks import ScopedContext
 from nooa.context_blocks.events import ToolCallEvent, ToolResult
+from nooa.default_context_view import PredictView
 from nooa.events import Message
 from nooa.runtime.middleware import LLMCallContext
 from nooa.strategies import PredictStrategy
@@ -46,7 +47,42 @@ async def trigger(agent, ctx):
     return await agent.event_manager.run_middleware("llm_call", ctx, dispatch)
 
 
-async def test_real_parent_overrides_do_not_leak_into_state_summary():
+async def test_under_budget_does_not_prepare_summary_source(monkeypatch):
+    agent, summarizer, ctx = setup()
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Summary preparation ran below the token threshold")
+
+    monkeypatch.setattr(summarizer, "_snapshot_source", unexpected)
+    monkeypatch.setattr(summarizer, "_event_markdown", unexpected)
+    monkeypatch.setattr(Message, "model_dump_json", unexpected)
+    monkeypatch.setattr(ctx.client, "count_tokens", unexpected)
+    result = await agent.event_manager.run_middleware(
+        "llm_call", ctx, lambda request: dispatch(request, tokens=1)
+    )
+    assert result.response.content == "parent"
+    assert summarizer._pending_task is None
+    await agent.aclose()
+
+
+async def test_cached_summary_does_not_prepare_standalone_prompt(monkeypatch):
+    agent, summarizer, ctx = setup()
+    ctx = ctx.model_copy(update={"context_view": PredictView(), "params": {}})
+    ctx = ctx.model_copy(update={"client": FakeLLMClient([LLMResponse(content="summary")])})
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("Standalone prompt preparation ran for a cached summary")
+
+    monkeypatch.setattr(summarizer, "_event_markdown", unexpected)
+    monkeypatch.setattr(ctx.client, "count_tokens", unexpected)
+    await trigger(agent, ctx)
+    assert summarizer._pending_summary == "summary"
+    assert summarizer._pending_source_text is None
+    await agent.aclose()
+
+
+@pytest.mark.parametrize("custom_view", [False, True])
+async def test_real_parent_uses_cache_only_with_default_view(custom_view):
     class RecordingClient(FakeLLMClient):
         def __init__(self):
             super().__init__(
@@ -68,6 +104,10 @@ async def test_real_parent_overrides_do_not_leak_into_state_summary():
             ...
 
     client = RecordingClient()
+
+    class CustomView(PredictView):
+        pass
+
     agent = Parent(llm=client)
     agent.event_manager.add(Message(content="STORED_SOURCE_FACT"))
     summarizer = TokenBudgetSummarizer.install(
@@ -75,14 +115,19 @@ async def test_real_parent_overrides_do_not_leak_into_state_summary():
     )
     try:
         with ScopedContext(context={"system_prompt": "PARENT_SCOPED_MARKER"}):
-            assert await agent.run() == "parent"
+            assert (
+                await agent.run(context_view=CustomView() if custom_view else PredictView())
+                == "parent"
+            )
             await summarizer._pending_task
-        assert summarizer._pending_summary == "summary"
+        assert summarizer._pending_summary == ("summary" if custom_view else '{"value":"summary"}')
         assert len(client.requests) == 2
         parent, summary = client.requests
         for marker in ("PARENT_DECORATOR_MARKER", "PARENT_SCOPED_MARKER"):
             assert marker in parent
-            assert marker not in summary
+            assert (marker in summary) is not custom_view
+        if not custom_view:
+            assert json.loads(summary)[:-1] == json.loads(parent)
         assert "STORED_SOURCE_FACT" in summary
     finally:
         await agent.aclose()
@@ -144,14 +189,17 @@ async def test_source_is_independent_of_view_and_frozen_before_dispatch():
         return await dispatch(request)
 
     try:
-        await agent.event_manager.run_middleware("llm_call", ctx, parent)
+        parent_call = asyncio.create_task(
+            agent.event_manager.run_middleware("llm_call", ctx, parent)
+        )
         await asyncio.wait_for(entered.wait(), 2)
+        assert not parent_call.done()
         assert all(f"STORED FACT {i}" in seen[0] for i in range(3))
         assert "STORED FACT 3" not in seen[0]
         assert "PARENT PROJECTION ONLY" not in seen[0] and "NEW WORK" not in seen[0]
         assert agent.event_manager.keys() == ["1", "2", "3", "4", "5"]
         release.set()
-        await summarizer._pending_task
+        await parent_call
         assert agent.event_manager.keys() == ["1", "2", "3", "4", "5"]
         summarizer._apply_pending_summary()
         assert agent.event_manager.keys() == ["1..3", "4", "5"]
@@ -183,7 +231,8 @@ async def test_stale_source_never_replaces_history(change):
     await agent.aclose()
 
 
-async def test_mutated_output_hidden_by_bounded_serializer_invalidates_summary():
+@pytest.mark.parametrize("reuse_prefix", [False, True])
+async def test_mutated_output_hidden_by_bounded_serializer_invalidates_summary(reuse_prefix):
     from nooa.context_blocks.events import ResultStatus
     from nooa.events import PythonOutput
 
@@ -194,6 +243,9 @@ async def test_mutated_output_hidden_by_bounded_serializer_invalidates_summary()
             self.values = values
 
     agent, summarizer, ctx = setup(preserve=0)
+    if reuse_prefix:
+        ctx = ctx.model_copy(update={"context_view": PredictView(), "params": {}})
+        ctx = ctx.model_copy(update={"client": FakeLLMClient([LLMResponse(content="summary")])})
     payload = Payload(list(range(200)))
     output = PythonOutput(
         tool_call_id="python",
@@ -341,7 +393,7 @@ def test_compaction_keeps_whole_tool_batches(cut):
         )
         ctx.client._context_window = int(cost / 0.7) + 2
     elif cut == "nested":
-        agent.event_manager.add(Message(content="child task", metadata={"call_id": "child"}))
+        agent.event_manager.add(Message(content="child task", call_id="child"))
     elif cut == "running":
         from nooa.context_blocks.events import ResultStatus
 
@@ -530,8 +582,8 @@ async def test_custom_view_cannot_hide_compactor_source():
         ]
     )
 
-    class Parent(Agent, llm=client, context_view=View()):
-        @strategy(PredictStrategy())
+    class Parent(Agent, llm=client):
+        @strategy(PredictStrategy(), context_view=View())
         async def run(self) -> str: ...
 
     agent = Parent()
@@ -602,9 +654,11 @@ async def test_aclose_cancels_and_awaits_background_work():
             cancelled.set()
 
     summarizer.summarize = AsyncMock(side_effect=wait)
-    await trigger(agent, ctx)
+    parent_call = asyncio.create_task(trigger(agent, ctx))
     await asyncio.wait_for(entered.wait(), 2)
     await agent.aclose()
+    with pytest.raises(asyncio.CancelledError):
+        await parent_call
     assert cancelled.is_set()
     assert summarizer._pending_task is None
     assert not agent.event_manager._middleware["llm_call"]
@@ -612,7 +666,9 @@ async def test_aclose_cancels_and_awaits_background_work():
 
 async def test_snapshot_failure_leaves_parent_and_history_intact():
     agent, summarizer, ctx = setup()
-    summarizer._snapshot_source = lambda _: (_ for _ in ()).throw(ValueError("bad source"))
+    summarizer._snapshot_source = lambda *args, **kwargs: (_ for _ in ()).throw(
+        ValueError("bad source")
+    )
     result = await trigger(agent, ctx)
     assert result.response.content == "parent"
     assert summarizer._pending_task is None

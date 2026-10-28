@@ -162,9 +162,9 @@ class BlockFormatter(ABC):
     def format_description(self) -> str:
         """Return a human-readable description of the block format.
 
-        DefaultAgentView explicitly includes this in the built-in Agent
-        prompt. Custom prompts and views choose their own guidance; rendering
-        never injects instructions. Return an empty string for no guidance.
+        Built-in manager-backed context views explicitly include this in the
+        built-in Agent prompt. Custom prompts and views choose their own guidance;
+        rendering never injects instructions. Return an empty string for no guidance.
         """
         return ""
 

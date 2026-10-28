@@ -4,7 +4,7 @@
 
 import pytest
 
-from nooa import Agent, Block, CacheBoundary, DefaultAgentView, collect_context_items, context_text
+from nooa import Agent, Block, CacheBoundary, collect_context_items, context_text
 from nooa.config.truncation_config import FormatConfig
 from nooa.context_blocks import (
     BlockFormatter,
@@ -19,6 +19,7 @@ from nooa.context_blocks.events import EventBase, ToolCallEvent, ToolResult
 from nooa.context_blocks.exceptions import UnsupportedContextLayout
 from nooa.context_blocks.models import BlockPart, RenderedMessage, ResolvedBlock
 from nooa.context_blocks.renderers import CachedBlockFormatter
+from nooa.default_context_view import ManagedContextView
 from nooa.llm_types import AssistantReasoning, AssistantText, LLMResponse, ToolCall
 from nooa.plain_formatter import PlainBlockFormatter
 from nooa.strategies.current_call import CurrentCall
@@ -47,7 +48,7 @@ async def test_default_guidance_matches_render_config(formatter_type):
     formatter = formatter_type()
     agent = Agent(llm=object(), render_config=RenderConfig(block_formatter=formatter))
     try:
-        items = await collect_context_items(DefaultAgentView(), agent, call_for(agent))
+        items = await collect_context_items(ManagedContextView(), agent, call_for(agent))
         prompt = next(
             item.content for item in items if getattr(item, "key", None) == "system_prompt"
         )
@@ -62,7 +63,7 @@ async def test_default_guidance_matches_render_config(formatter_type):
 
 
 @pytest.mark.parametrize(
-    "source", ["manager", "strategy", "decorator", "scoped", "disable", "class", "resolver"]
+    "source", ["manager", "view", "decorator", "scoped", "disable", "class", "resolver"]
 )
 async def test_default_guidance_respects_prompt_ownership(source):
     class CustomPrompt(Agent):
@@ -72,23 +73,24 @@ async def test_default_guidance_respects_prompt_ownership(source):
         def _resolve_system_prompt(self):
             return "user prompt"
 
-    class CustomStrategy:
-        def get_block_overrides(self):
+    class CustomInstructions(ManagedContextView):
+        def instruction_blocks(self, call):
             return {"system_prompt": "user prompt"}
 
     cls = CustomPrompt if source == "class" else CustomResolver if source == "resolver" else Agent
     agent = cls(llm=object())
     kwargs = {}
+    view = ManagedContextView()
     if source == "manager":
         agent.context_manager.apply_override("system_prompt", "user prompt")
     elif source == "disable":
         agent.context_manager.disable("system_prompt")
-    elif source == "strategy":
-        kwargs["strategy"] = CustomStrategy()
+    elif source == "view":
+        view = CustomInstructions()
     elif source in {"decorator", "scoped"}:
         kwargs[f"_{source}_context"] = {"system_prompt": "user prompt"}
     try:
-        items = await collect_context_items(DefaultAgentView(), agent, call_for(agent, **kwargs))
+        items = await collect_context_items(view, agent, call_for(agent, **kwargs))
         prompts = [item.content for item in items if getattr(item, "key", None) == "system_prompt"]
         assert prompts == ([] if source == "disable" else ["user prompt"])
     finally:
@@ -102,9 +104,9 @@ async def test_custom_view_receives_no_implicit_guidance(formatter_type):
             yield Block(key="custom", content="only my content", role=Role.USER)
 
     config = RenderConfig(block_formatter=formatter_type())
-    agent = Agent(llm=object(), render_config=config, context_view=CustomView())
+    agent = Agent(llm=object(), render_config=config)
     try:
-        items = await collect_context_items(agent.__context_view__(), agent, call_for(agent))
+        items = await collect_context_items(CustomView(), agent, call_for(agent))
         assert items == (Block(key="custom", content="only my content", role=Role.USER),)
         output = render_context(
             items,
@@ -237,7 +239,7 @@ async def test_default_view_membership_and_boundary_do_not_depend_on_format():
         snapshots = []
         for formatter_type in FORMATTERS:
             agent.render_config = RenderConfig(block_formatter=formatter_type())
-            items = await collect_context_items(DefaultAgentView(), agent, call_for(agent))
+            items = await collect_context_items(ManagedContextView(), agent, call_for(agent))
             snapshots.append(
                 [(item.key, item.role) if isinstance(item, Block) else type(item) for item in items]
             )
@@ -256,7 +258,7 @@ async def test_empty_description_and_explicit_source_helper_do_not_inject_guidan
 
     agent = Agent(llm=object(), render_config=RenderConfig(block_formatter=SilentFormatter()))
     try:
-        items = await collect_context_items(DefaultAgentView(), agent, call_for(agent))
+        items = await collect_context_items(ManagedContextView(), agent, call_for(agent))
         prompt = next(
             item.content for item in items if getattr(item, "key", None) == "system_prompt"
         )
@@ -284,7 +286,7 @@ async def test_repeated_default_assembly_uses_current_formatter_once():
         for formatter_type in [XMLBlockFormatter, MarkdownBlockFormatter, XMLBlockFormatter]:
             formatter = formatter_type()
             agent.render_config = RenderConfig(block_formatter=formatter)
-            items = await collect_context_items(DefaultAgentView(), agent, call_for(agent))
+            items = await collect_context_items(ManagedContextView(), agent, call_for(agent))
             prompt = next(
                 item.content for item in items if getattr(item, "key", None) == "system_prompt"
             )
@@ -308,7 +310,7 @@ async def test_whitespace_only_description_does_not_inject_guidance():
 
     agent = Agent(llm=object(), render_config=RenderConfig(block_formatter=WhitespaceFormatter()))
     try:
-        items = await collect_context_items(DefaultAgentView(), agent, call_for(agent))
+        items = await collect_context_items(ManagedContextView(), agent, call_for(agent))
         prompt = next(
             item.content for item in items if getattr(item, "key", None) == "system_prompt"
         )
@@ -332,7 +334,7 @@ async def test_subclass_hierarchy_prompt_guidance_ownership():
     sub_custom = SubCustom(llm=object(), render_config=RenderConfig(block_formatter=formatter))
     try:
         default_items = await collect_context_items(
-            DefaultAgentView(), sub_default, call_for(sub_default)
+            ManagedContextView(), sub_default, call_for(sub_default)
         )
         default_prompt = next(
             item.content for item in default_items if getattr(item, "key", None) == "system_prompt"
@@ -340,7 +342,7 @@ async def test_subclass_hierarchy_prompt_guidance_ownership():
         assert formatter.format_description() in default_prompt
 
         custom_items = await collect_context_items(
-            DefaultAgentView(), sub_custom, call_for(sub_custom)
+            ManagedContextView(), sub_custom, call_for(sub_custom)
         )
         custom_prompt = next(
             item.content for item in custom_items if getattr(item, "key", None) == "system_prompt"
@@ -424,7 +426,7 @@ async def test_instance_prompt_resolver_override_owns_guidance():
     # Exercise the supported instance resolver override without method binding.
     agent.__dict__["_resolve_system_prompt"] = lambda: "instance-owned prompt"
     try:
-        items = await collect_context_items(DefaultAgentView(), agent, call_for(agent))
+        items = await collect_context_items(ManagedContextView(), agent, call_for(agent))
         prompt = next(
             item.content for item in items if getattr(item, "key", None) == "system_prompt"
         )
@@ -434,7 +436,7 @@ async def test_instance_prompt_resolver_override_owns_guidance():
         await agent.aclose()
 
 
-@pytest.mark.parametrize("source", ["strategy", "decorator", "scoped"])
+@pytest.mark.parametrize("source", ["view", "decorator", "scoped"])
 @pytest.mark.parametrize(
     "replacement",
     [None, "owner-selected prompt", Context(expr="self._resolve_system_prompt()")],
@@ -445,18 +447,15 @@ async def test_replaced_prompt_does_not_evaluate_unused_guidance(source, replace
         def format_description(self):
             raise AssertionError("An overridden prompt must not evaluate default guidance")
 
-    class OverrideStrategy:
-        def get_block_overrides(self):
+    class OverrideView(ManagedContextView):
+        def instruction_blocks(self, call):
             return {"system_prompt": replacement}
 
-    kwargs = (
-        {"strategy": OverrideStrategy()}
-        if source == "strategy"
-        else {f"_{source}_context": {"system_prompt": replacement}}
-    )
+    view = OverrideView() if source == "view" else ManagedContextView()
+    kwargs = {} if source == "view" else {f"_{source}_context": {"system_prompt": replacement}}
     agent = Agent(llm=object(), render_config=RenderConfig(block_formatter=UnusedFormatter()))
     try:
-        items = await collect_context_items(DefaultAgentView(), agent, call_for(agent, **kwargs))
+        items = await collect_context_items(view, agent, call_for(agent, **kwargs))
         prompts = [item.content for item in items if getattr(item, "key", None) == "system_prompt"]
         expected = (
             agent._resolve_system_prompt() if isinstance(replacement, Context) else replacement

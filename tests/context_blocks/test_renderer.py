@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests for render_context().
 
-render_context() takes pre-resolved blocks (list[ResolvedBlock]) and renders
+render_context() takes materialized blocks and typed events and renders
 them via BlockFormatter + ProviderFormatter. No eval function, no expression
 evaluation, no class — just a pure function.
 """
@@ -74,14 +74,43 @@ class TestRenderContextBasic:
         assert result[0]["role"] == "system"
         assert result[1] == CacheBoundary()
 
-    def test_leading_and_consecutive_boundaries_are_noops(self):
+    def test_leading_and_consecutive_boundaries_are_preserved(self):
         result = render_context(
             [CacheBoundary(), CacheBoundary(), Block(key="only", content="only")],
             block_formatter=XMLBlockFormatter(),
             provider_formatter=OpenAIProviderFormatter(),
         ).output
-        assert len(result) == 1
-        assert result[0]["role"] == "system"
+        assert result[:2] == [CacheBoundary(), CacheBoundary()]
+        assert len(result) == 3
+        assert result[2]["role"] == "system"
+
+    def test_boundary_survives_omitted_incomplete_history(self):
+        response = LLMResponse(
+            tool_calls=[ToolCall(id="missing", name="execute_python", arguments="{}")],
+            finish_reason="tool_calls",
+        )
+        result = render_context(
+            [response, CacheBoundary(), Block(key="task", content="continue", role=Role.USER)],
+            block_formatter=XMLBlockFormatter(),
+            provider_formatter=OpenAIProviderFormatter(),
+        ).output
+        assert len(result) == 2
+        assert result[0] == CacheBoundary()
+        assert "continue" in result[1]["content"]
+
+    def test_leading_boundary_keeps_explicit_cache_policy(self):
+        from nooa.unifiedllm.cache_policy import apply_cache_policy
+
+        rendered = render_context(
+            [CacheBoundary(), Block(key="task", content="volatile", role=Role.USER)],
+            block_formatter=XMLBlockFormatter(),
+            provider_formatter=OpenAIProviderFormatter(),
+        ).output
+        direct = [CacheBoundary(), {"role": "user", "content": "volatile"}]
+        for messages in (direct, rendered):
+            clean, _, explicit = apply_cache_policy(messages, "openai", responses=True)
+            assert explicit
+            assert "cache_control" not in repr(clean)
 
     def test_boundary_after_tool_event_marks_complete_result(self):
         event = ToolCallEvent(
@@ -134,7 +163,7 @@ class TestRenderContextBasic:
 
     def test_render_single_system_block(self):
         """render_context() formats a single system block."""
-        blocks = [ResolvedBlock(key="persona", content="You are helpful.")]
+        blocks = [Block(key="persona", content="You are helpful.")]
 
         result = render_context(
             blocks,
@@ -151,7 +180,7 @@ class TestRenderContextBasic:
     def test_render_system_block_with_metadata(self):
         """render_context() includes ``expr=`` only for set_dynamic-sourced blocks."""
         blocks = [
-            ResolvedBlock(
+            Block(
                 key="notes",
                 content="My notes",
                 metadata=BlockMetadata(expr="self.context['notes']", source_dynamic=True),
@@ -171,8 +200,8 @@ class TestRenderContextBasic:
     def test_render_multiple_system_blocks(self):
         """render_context() formats multiple system blocks in order."""
         blocks = [
-            ResolvedBlock(key="persona", content="Be helpful."),
-            ResolvedBlock(key="tools", content="search, calculate"),
+            Block(key="persona", content="Be helpful."),
+            Block(key="tools", content="search, calculate"),
         ]
 
         result = render_context(
@@ -190,8 +219,8 @@ class TestRenderContextBasic:
     def test_render_user_message_block(self):
         """render_context() routes USER role blocks to messages."""
         blocks = [
-            ResolvedBlock(key="persona", content="System prompt"),
-            ResolvedBlock(key="msg1", content="Hello", role=Role.USER),
+            Block(key="persona", content="System prompt"),
+            Block(key="msg1", content="Hello", role=Role.USER),
         ]
 
         result = render_context(
@@ -208,8 +237,8 @@ class TestRenderContextBasic:
     def test_render_assistant_message_block(self):
         """render_context() routes ASSISTANT role blocks to messages."""
         blocks = [
-            ResolvedBlock(key="msg1", content="Hi", role=Role.USER),
-            ResolvedBlock(key="msg2", content="Hello!", role=Role.ASSISTANT),
+            Block(key="msg1", content="Hi", role=Role.USER),
+            Block(key="msg2", content="Hello!", role=Role.ASSISTANT),
         ]
 
         result = render_context(
@@ -232,7 +261,7 @@ class TestRenderContextTruncation:
         Per-value bounds come from cfg.context_blocks at render time;
         whole-block eviction (L4) handles overflow at assembly."""
         long_content = "A" * 1000
-        blocks = [ResolvedBlock(key="data", content=long_content)]
+        blocks = [Block(key="data", content=long_content)]
 
         result = render_context(
             blocks,
@@ -250,7 +279,7 @@ class TestRenderContextTruncation:
     def test_no_truncation_without_limit(self):
         """render_context() does not truncate when no limit is set."""
         long_content = "A" * 1000
-        blocks = [ResolvedBlock(key="data", content=long_content)]
+        blocks = [Block(key="data", content=long_content)]
 
         result = render_context(
             blocks,
@@ -268,7 +297,7 @@ class TestRenderContextMarkdown:
     def test_markdown_formatting(self):
         """render_context() works with MarkdownBlockFormatter."""
         blocks = [
-            ResolvedBlock(
+            Block(
                 key="instructions",
                 content="Follow these rules.",
                 metadata=BlockMetadata(expr="self.instructions"),
@@ -300,12 +329,7 @@ class TestRenderContextToolCalls:
             result=ToolResult(tool_call_id="call_123", content="Found it"),
         )
         blocks = [
-            ResolvedBlock(
-                key="tool1",
-                content="",
-                role=Role.ASSISTANT,
-                event=event,
-            ),
+            event,
         ]
 
         result = render_context(
@@ -328,9 +352,7 @@ class TestRenderContextNoMutation:
     def test_system_block_truncation_preserves_original(self):
         """Truncating system blocks must not modify the original ResolvedBlock."""
         original_content = "A" * 1000
-        block = ResolvedBlock(
-            key="data", content=original_content, metadata=BlockMetadata(expr="test")
-        )
+        block = Block(key="data", content=original_content, metadata=BlockMetadata(expr="test"))
 
         render_context(
             [block],
@@ -345,7 +367,7 @@ class TestRenderContextNoMutation:
     def test_event_block_truncation_preserves_original(self):
         """Truncating message blocks must not modify the original ResolvedBlock."""
         original_content = "B" * 1000
-        block = ResolvedBlock(
+        block = Block(
             key="event_1",
             content=original_content,
             role=Role.USER,
@@ -366,8 +388,8 @@ class TestRenderContextNoMutation:
         """Calling render_context() twice must produce identical results (no state leakage)."""
         long_content = "C" * 1000
         blocks = [
-            ResolvedBlock(key="data", content=long_content),
-            ResolvedBlock(key="msg", content=long_content, role=Role.USER),
+            Block(key="data", content=long_content),
+            Block(key="msg", content=long_content, role=Role.USER),
         ]
 
         result1 = render_context(
@@ -598,13 +620,7 @@ class TestRenderContextEventSerialization:
         from nooa.context_blocks.events import UserEvent
 
         event = UserEvent(content="Hello world", tag="1")
-        block = ResolvedBlock(
-            key="event_1",
-            content="",  # deferred — as produced by _phase_events now
-            role=Role.USER,
-            metadata=BlockMetadata(expr="self.events['1']", tag="1"),
-            event=event,
-        )
+        block = event.model_copy(update={"tag": "1"})
         result = render_context(
             [block],
             block_formatter=XMLBlockFormatter(),
@@ -627,13 +643,7 @@ class TestRenderContextEventSerialization:
 
         long_content = "A" * 200
         event = UserEvent(content=long_content, tag="1")
-        block = ResolvedBlock(
-            key="event_1",
-            content="",
-            role=Role.USER,
-            metadata=BlockMetadata(tag="1"),
-            event=event,
-        )
+        block = event.model_copy(update={"tag": "1"})
 
         result = render_context(
             [block],
@@ -657,12 +667,7 @@ class TestRenderContextEventSerialization:
             arguments={"code": "print(1)"},
             result=ToolResult(tool_call_id="tc_1", content="status: complete"),
         )
-        block = ResolvedBlock(
-            key="event_1",
-            content="",
-            role=Role.ASSISTANT,
-            event=event,
-        )
+        block = event
         result = render_context(
             [block],
             block_formatter=XMLBlockFormatter(),
@@ -675,12 +680,7 @@ class TestRenderContextEventSerialization:
 
     def test_block_with_no_event_preserves_existing_content(self):
         """Blocks with event=None must pass through the serialization step unchanged."""
-        block = ResolvedBlock(
-            key="msg",
-            content="pre-existing content",
-            role=Role.USER,
-            event=None,
-        )
+        block = Block(key="user", content="pre-existing content", role=Role.USER)
         result = render_context(
             [block],
             block_formatter=XMLBlockFormatter(),
@@ -692,8 +692,8 @@ class TestRenderContextEventSerialization:
         assert "pre-existing content" in user_msg["content"]
 
 
-class TestCountTokens:
-    """Rendering accepts legacy budget arguments but applies no policy."""
+class TestRendererContract:
+    """Rendering reports limits but owns no budget policy."""
 
     def test_accepts_context_limit_without_counter(self):
         result = render_context(
@@ -701,33 +701,31 @@ class TestCountTokens:
             block_formatter=XMLBlockFormatter(),
             provider_formatter=OpenAIProviderFormatter(),
             context_limit=10_000,
-            count_tokens=None,
         )
         assert result.output == []
 
-    def test_accepts_none_counter_when_no_token_limits(self):
+    def test_accepts_no_token_limits(self):
         """No error when context_limit is not set."""
         result = render_context(
             [],
             block_formatter=XMLBlockFormatter(),
             provider_formatter=OpenAIProviderFormatter(),
-            count_tokens=None,
         ).output
         assert result is not None
 
-    def test_does_not_use_count_tokens_for_context_limit(self):
-        call_count = []
+    def test_rejects_internal_resolved_blocks(self):
+        with pytest.raises(TypeError, match="Expected Block, EventBase, or CacheBoundary"):
+            render_context(
+                [ResolvedBlock(key="sys", content="Hello world")],
+                block_formatter=XMLBlockFormatter(),
+                provider_formatter=OpenAIProviderFormatter(),
+            )
 
-        def counter(s: str) -> int:
-            call_count.append(1)
-            return len(s) // 4
-
-        blocks = [ResolvedBlock(key="sys", content="Hello world")]
-        render_context(
-            blocks,
-            block_formatter=XMLBlockFormatter(),
-            provider_formatter=OpenAIProviderFormatter(),
-            context_limit=10_000,
-            count_tokens=counter,
-        )
-        assert call_count == []
+    def test_rejects_unused_counter(self):
+        with pytest.raises(TypeError, match="count_tokens"):
+            render_context(
+                [],
+                block_formatter=XMLBlockFormatter(),
+                provider_formatter=OpenAIProviderFormatter(),
+                count_tokens=len,
+            )

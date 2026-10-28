@@ -4,11 +4,11 @@
 
 import pytest
 
-from nooa import Agent, DefaultAgentView, collect_context_items
+from nooa import Agent, collect_context_items
 from nooa.context_blocks import OpenAIProviderFormatter, XMLBlockFormatter, render_context
 from nooa.context_blocks.events import ResultStatus, ToolCallEvent, ToolResult
 from nooa.context_blocks.exceptions import UnsupportedContextLayout
-from nooa.default_context_view import visible_events
+from nooa.default_context_view import ManagedContextView, visible_events
 from nooa.llm_types import LLMResponse, ToolCall
 from nooa.strategies.current_call import CurrentCall
 
@@ -39,13 +39,37 @@ def response(*ids):
     )
 
 
+async def test_default_view_empty_rendered_history_keeps_boundary_and_task():
+    from nooa import CacheBoundary, Context
+
+    agent = Agent(llm=object())
+    for key in ("system_prompt", "self", "state"):
+        agent.context[key] = None
+    agent.context["task"] = Context("continue", prefix=False)
+    event = response("missing")
+    agent.event_manager.add(event)
+    original = event.model_dump_json()
+    try:
+        call = CurrentCall(id="next", method_name="run", decorator="plan", agent=agent)
+        items = await collect_context_items(ManagedContextView(), agent, call)
+        result = render_context(
+            items, block_formatter=XMLBlockFormatter(), provider_formatter=OpenAIProviderFormatter()
+        ).output
+        assert result[0] == CacheBoundary()
+        assert len(result) == 2
+        assert "continue" in result[1]["content"]
+        assert event.model_dump_json() == original
+    finally:
+        await agent.aclose()
+
+
 async def test_default_view_recovers_standalone_missing_result_without_mutation():
     agent = Agent(llm=object())
     event = execution("interrupted")
     agent.event_manager.add(event)
     original = event.model_dump_json()
     call = CurrentCall(id="next", method_name="run", decorator="plan", agent=agent)
-    items = await collect_context_items(DefaultAgentView(), agent, call)
+    items = await collect_context_items(ManagedContextView(), agent, call)
     messages = render(items)
     tools = [message for message in messages if message.tool_call_id]
     assert len(tools) == 1

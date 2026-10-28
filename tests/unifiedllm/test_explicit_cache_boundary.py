@@ -18,11 +18,11 @@ from nooa.context_blocks.formatter import OpenAIProviderFormatter
 from nooa.context_blocks.models import (
     BlockMetadata,
     RenderedMessage,
-    ResolvedBlock,
     Role,
 )
 from nooa.context_blocks.renderer import RenderResult, render_context
 from nooa.context_blocks.renderers.cached import CachedBlockFormatter
+from nooa.context_view import Block
 from nooa.llm_types import AssistantReasoning, LLMResponse
 from nooa.unifiedllm import CacheBoundary, CompletionClient, ResponsesClient
 from nooa.unifiedllm.chat_parts import capture_chat_parts
@@ -36,21 +36,15 @@ from nooa.unifiedllm.response_parts import capture_parts
 def _render_result(dynamic: str) -> RenderResult:
     event = UserEvent(content="solve this", tag="1")
     blocks = [
-        ResolvedBlock(
+        Block(
             key="instructions",
             content="stable instructions",
             role=Role.SYSTEM,
             metadata=BlockMetadata(static=True),
         ),
-        ResolvedBlock(
-            key="event_1",
-            content=event.content,
-            role=Role.USER,
-            metadata=BlockMetadata(tag="1"),
-            event=event,
-        ),
+        event.model_copy(update={"tag": "1"}),
         CacheBoundary(),
-        ResolvedBlock(
+        Block(
             key="live_state",
             content=dynamic,
             role=Role.USER,
@@ -658,11 +652,16 @@ async def test_multimodal_breakpoint_reaches_provider_http(provider, with_text, 
             api_key="test",
             api_base="https://example.test/v1",
             cache_breakpoint="openai",
+            media_inputs=["image", "pdf"],
         )
         block = (
             {"type": "input_image", "image_url": png}
             if media == "image"
-            else {"type": "input_file", "file_id": "file-test"}
+            else {
+                "type": "input_file",
+                "file_data": "data:application/pdf;base64,JVBERi0xLjQKJSVFT0YK",
+                "filename": "test.pdf",
+            }
         )
         marker = "prompt_cache_breakpoint"
     else:
@@ -671,6 +670,7 @@ async def test_multimodal_breakpoint_reaches_provider_http(provider, with_text, 
             api_key="test",
             api_base="https://example.test",
             cache_breakpoint="anthropic",
+            media_inputs=["image", "pdf"],
         )
         block = (
             {"type": "image_url", "image_url": {"url": png}}

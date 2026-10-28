@@ -11,8 +11,9 @@ import pytest
 from dotenv import find_dotenv, load_dotenv
 from pydantic import BaseModel
 
-from nooa import Agent, Block, Context, DefaultSkillView, Skill, resolve_context_view, strategy
+from nooa import Agent, Block, Context, Skill, strategy
 from nooa.context_blocks.events import UserEvent
+from nooa.default_context_view import active_skills
 from nooa.strategies import PredictStrategy
 from nooa.unifiedllm import get_llm_client
 
@@ -47,22 +48,21 @@ class InventoryPolicyView:
 class InventoryView:
     async def assemble(self, agent, call):
         yield Block(key="instructions", content="Apply the supplied inventory policy exactly.")
-        for skill in agent.active_skills():
-            view = resolve_context_view(skill, default=DefaultSkillView())
-            async for item in view.assemble(skill, call):
+        for skill in active_skills(agent):
+            async for item in InventoryPolicyView().assemble(skill, call):
                 yield item
         yield UserEvent(content=call.format_parameters_as_code())
         yield Block(key="request", content="Return the inventory decision.", role="user")
 
 
-class InventoryPolicy(Skill, context_view=InventoryPolicyView()):
+class InventoryPolicy(Skill):
     pass
 
 
-class InventoryAgent(Agent, context_view=InventoryView()):
+class InventoryAgent(Agent):
     policy = InventoryPolicy()
 
-    @strategy(PredictStrategy())
+    @strategy(PredictStrategy(), context_view=InventoryView())
     async def decide(self, inventory: dict[str, int]) -> Decision:
         """Decide whether the requested inventory can be fulfilled."""
         ...

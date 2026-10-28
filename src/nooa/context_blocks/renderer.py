@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from nooa.config.truncation_config import FormatConfig
+    from nooa.context_view import ContextItem
 
 from nooa.context_blocks.events import EventBase, ToolCallEvent
 from nooa.context_blocks.exceptions import UnsupportedContextLayout
@@ -79,12 +80,12 @@ def format_message_content(block: ResolvedBlock, format_type: str) -> str:
 
 
 def render_context(
-    blocks: Sequence[Any],
+    blocks: Sequence["ContextItem"],
     *,
     block_formatter: BlockFormatter,
     provider_formatter: ProviderFormatter,
     context_limit: int | None = None,
-    count_tokens: Callable[[str], int] | None = None,
+    context_format: "FormatConfig | None" = None,
     event_format: "FormatConfig | None" = None,
     event_format_resolver: Callable[[Any], "FormatConfig | None"] | None = None,
     model_context_window: int | None = None,
@@ -113,17 +114,22 @@ def render_context(
     linked_execution_segments: list[tuple[str, str, int]] = []
     for item in blocks:
         if isinstance(item, CacheBoundary):
-            if segment:
-                segments.append((segment, True))
-                segment = []
+            segments.append((segment, True))
+            segment = []
             segment_index += 1
             continue
-        if isinstance(item, ResolvedBlock):
-            block = item
-        elif isinstance(item, Block):
+        if isinstance(item, Block):
+            from nooa.agentdoc import pformat
+
             block = ResolvedBlock(
                 key=item.key,
-                content=item.content,
+                content=item.content
+                if isinstance(item.content, str)
+                else pformat(
+                    item.content,
+                    unquote_strings=True,
+                    **(context_format.model_dump() if context_format is not None else {}),
+                ),
                 role=item.role,
                 metadata=item.metadata or BlockMetadata(),
             )
@@ -198,12 +204,7 @@ def render_context(
     # Neutral message list → client input, retaining replay and cache carriers.
     messages: list[RenderedMessage] = []
     for segment, boundary_after in segments:
-        rendered = block_formatter.format(segment)
-        if boundary_after:
-            if not rendered:
-                raise UnsupportedContextLayout(
-                    f"{type(block_formatter).__name__} emitted no message before CacheBoundary"
-                )
+        rendered = block_formatter.format(segment) if segment else []
         messages.extend(rendered)
         if boundary_after:
             messages.append(RenderedMessage(role=Role.METADATA, replay_message=CacheBoundary()))

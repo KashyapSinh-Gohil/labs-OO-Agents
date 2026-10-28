@@ -1,8 +1,8 @@
-# Background state compaction
+# State compaction
 
-`TokenBudgetSummarizer` replaces older stored events with a summary while the
-agent keeps working. Actual request usage triggers compaction; the summary
-input comes directly from stored history, independently of the context view.
+`TokenBudgetSummarizer` pauses the agent while it summarizes older stored events.
+Actual request usage triggers compaction after a model response; the source
+range is selected from stored history, independently of the context view.
 Views remain responsible for prompt selection and any prompt-only compression.
 
 ```python
@@ -21,9 +21,13 @@ diagnostics and tool-call group integrity. Oversized, unfinished and image-beari
 groups remain active. Events created during the request are outside this snapshot. Summary input
 contains public event content; persistence metadata and opaque provider state stay private.
 
-The dedicated Predict request uses the parent's effective client, without its
-prompt, tools, output schema or cache-key contract. Parent-prefix cache reuse is
-not guaranteed. At most one summary runs or waits for application.
+With the built-in CodeAct, CodeActV2, Predict, and PurePython views, a summary request reuses the completed parent
+request and appends a summary instruction, preserving its cache prefix, tools,
+schema and settings. Tools are never executed by the summary request. Custom
+views use a dedicated Predict request built from stored events with the parent's
+effective client, without inheriting its prompt, tools, schema or cache key.
+At most one summary runs or waits for application.
+Cached-summary requests pass through agent middleware again; use `summary_fork_active()` to distinguish them, and preserve source history and the prefix when cache reuse is desired.
 
 A completed summary applies at the next `BeforeTurn` only if the source range,
 identities and contents still match. Raw events remain accessible in storage.
