@@ -6,6 +6,77 @@ to follow semantic versioning.
 
 ## [Unreleased]
 
+- Breaking: context views decide what the model sees. A `ContextView` yields
+  the `Block`s, events and `CacheBoundary` of one request; a method or call
+  selects one with `context_view=`, otherwise the strategy's default
+  (`CodeActView`, `PredictView`, `DecisionContextView`) applies. See
+  `docs/context.md`.
+  - Views own their blocks (system prompt, `self`, events API, state, strategy
+    instructions). `self.context` only adds blocks: a `None` value suppresses
+    user, skill and decorator/scoped blocks, never a view's own.
+    `remove_protected()`, `set_static_protected()`, `set_dynamic_protected()`,
+    `ProtectedBlockError` and `DynamicNotResolvedError` are removed.
+  - View options are constructor arguments, such as `CodeActView(state=False)`;
+    anything else, including a custom system prompt, is a custom view.
+    `Agent._resolve_system_prompt()` and `_events_api_prompt()` are removed.
+  - `EventQuery`, agent `event_query=`, `ScopedContext(events=...)` and manager
+    query overrides are removed: event selection is view code
+    (`history()`), and `self.events.query()` remains for inspection.
+  - Caching is explicit: a view places at most one `CacheBoundary`, and without
+    one NOOA adds no `cache_control` marker. `CachedBlockFormatter` is removed
+    and `cache_control_injection_points` raises `ValueError`.
+  - The renderer no longer evicts: `render_context()` takes no context limit,
+    and `BlockMetadata.truncated` is renamed `evicted` (the view marks it).
+  - A new bare decorator or scoped value is rendered in the volatile suffix;
+    use `Context(..., prefix=True)` to place it in the cached prefix.
+  - `Skill.context_block` is `(key, Context(...))`, evaluated with `self`
+    bound to the skill; the `(key, "expression")` form raises `TypeError`.
+  - Errors that escape a view's `assemble()` raise `ContextAssemblyError`
+    and are not retried. `RequestRecovery.before_request()` is replaced by
+    `before_send()`, called after the messages are built.
+- Events carry a typed `call_id` (it was `metadata["call_id"]`), and a
+  `Summary` requires `source_call_ids`. Stored sessions are not migrated:
+  older events keep their call id only in `metadata`, and older summaries
+  load with empty `source_call_ids`, so views that filter by call leave them out.
+- Dependency security update. LiteLLM is now locked at 1.100.5
+  (CVE-2026-114612); the `litellm` requirement starts at 1.100.4 and excludes
+  the unfixed 1.101-1.103 releases. LiteLLM now requires boto3. Chat
+  Completions requests still leave out `prompt_cache_key`, as LiteLLM 1.97
+  did: LiteLLM 1.100 would send it to OpenAI-compatible endpoints and reject it
+  for Anthropic, Bedrock, and Gemini unless `drop_params` is set. List it in
+  `allowed_openai_params` to send it. The session-affinity header is still
+  sent. OpenTelemetry is locked at 1.45.2 (CVE-2026-126360), and the nooa-atom
+  `benchmark` profile pins Soup Sieve 4.1 (CVE-2026-126190 to
+  CVE-2026-126193), whose 4.0 release no longer matches inside `template`
+  contents. The viewer frontend uses React 19.3.1. The `exclude-newer` cutoff
+  moves to 2026-11-11 for the root project and the cybergym example, which is
+  also locked at LiteLLM 1.100.5.
+- `SandboxConfig.env_allowlist` keeps only the listed environment variables in
+  the sandbox worker. The worker is a fork, so it inherited every variable of the
+  parent, model API keys included, and a cell could print them. Removing them
+  from `os.environ` alone is not enough: `/proc/self/environ` still shows the
+  block the kernel copied in at `exec`, so the worker also zeroes that block,
+  and fails to start if it is still readable afterwards. Only the environment
+  is cleaned: a key the parent already holds in memory, such as an LLM client's,
+  is still in the forked worker. Zeroing and checking the block is Linux-only;
+  on other hosts (reachable with `require=False`) the worker only clears
+  `os.environ`, so variables set directly through libc may remain readable.
+  The parent's own environment is still at `/proc/<parent-pid>/environ`; with
+  `filesystem=True` (the default) Landlock denies the worker that read, but with
+  `filesystem=False` a cell can still read the parent's variables there.
+  The default (`None`) keeps the current behaviour, inheriting everything.
+- An inline image in a format models do not accept (anything but PNG, JPEG,
+  GIF or WebP, for example SVG from `show(Image.from_file("chart.svg"))`) is now
+  replaced by a note before each request, instead of being sent. Every MIME
+  hint of the image is checked (data URL, `format`, Anthropic `media_type`),
+  also for top-level Responses `input_image` items; accepted aliases are sent
+  in canonical form (`image/jpg` as `image/jpeg`). Before, the NVIDIA
+  Inference Hub refused such an image with HTTP 500 and, because the image
+  stays in history, every later turn of the session failed. A provider's HTTP
+  500 that says "Unsupported image format: ..." now also counts as an explicit
+  rejection: it is not retried unchanged, and the existing retry-with-a-note
+  recovery handles it at once. That recovery no longer blames an image that
+  was already replaced by a note.
 - `nooa.runtime.channels.StreamEnd` is removed: `QueueManager.spawn` no longer
   publishes a runtime event when a job finishes (the job's handle state and
   result say it ended).
